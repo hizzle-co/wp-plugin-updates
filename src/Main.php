@@ -190,7 +190,7 @@ class Main {
 	 */
 	private static function fetch_license_details( $license_key ) {
 		$license_key = sanitize_text_field( $license_key );
-		$cache_key   = sanitize_key( self::get_config( 'option_name', 'wp_plugin_updates' ) . '_license_' . $license_key );
+		$cache_key   = sanitize_key( self::get_config( 'option_name', 'wp_plugin_updates_data' ) . '_license_' . $license_key );
 		$cached      = get_transient( $cache_key );
 
 		// Abort early if details were cached.

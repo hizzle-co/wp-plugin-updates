@@ -231,6 +231,25 @@ if ( is_wp_error( $license_details ) ) {
 - PHP 5.6 or higher
 - WordPress 5.0 or higher
 
+## Translation Support
+
+This library uses a configurable text domain for translations. If you're using this library in your plugin:
+
+1. Set the `text_domain` config to match your plugin's text domain
+2. Translation strings in this library are marked with dynamic text domains
+3. For gettext tools to extract these strings, you may want to create wrapper functions in your plugin that use string literals
+
+Example:
+```php
+// In your plugin
+function my_plugin_translate_updater_strings() {
+    // These will be picked up by gettext
+    __( 'License API URL is not configured.', 'my-plugin' );
+    __( 'Error fetching your license key.', 'my-plugin' );
+    // ... etc
+}
+```
+
 ## License
 
 GPL-3.0-or-later

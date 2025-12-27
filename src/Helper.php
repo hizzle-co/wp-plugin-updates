@@ -118,7 +118,7 @@ class Helper {
 			return false;
 		}
 
-		$option_prefix   = Main::get_config( 'option_name', 'wp_plugin_updates' );
+		$option_prefix   = Main::get_config( 'option_name', 'wp_plugin_updates_data' );
 		$license_api_url = Main::get_config( 'license_api_url' );
 
 		if ( empty( $license_api_url ) ) {
@@ -236,7 +236,7 @@ class Helper {
 			);
 		}
 
-		$option_prefix   = Main::get_config( 'option_name', 'wp_plugin_updates' );
+		$option_prefix   = Main::get_config( 'option_name', 'wp_plugin_updates_data' );
 		$license_api_url = Main::get_config( 'license_api_url' );
 
 		if ( empty( $license_api_url ) ) {

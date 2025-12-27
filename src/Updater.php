@@ -112,9 +112,9 @@ class Updater {
 
 		sort( $payload );
 
-		$option_prefix = Main::get_config( 'option_name', 'wp_plugin_updates' );
+		$option_prefix = Main::get_config( 'option_name', 'wp_plugin_updates_data' );
 		$hash          = md5( wp_json_encode( $payload ) . Main::get_active_license_key() );
-		$cache_key     = '_' . $option_prefix . '_update_check';
+		$cache_key     = sanitize_key( '_' . $option_prefix . '_update_check' );
 		$data          = get_transient( $cache_key );
 		
 		if ( false !== $data && isset( $data['hash'] ) && hash_equals( $hash, $data['hash'] ) ) {
@@ -198,8 +198,8 @@ class Updater {
 	 * @return int The number of products with updates.
 	 */
 	public static function get_updates_count() {
-		$option_prefix = Main::get_config( 'option_name', 'wp_plugin_updates' );
-		$cache_key     = '_' . $option_prefix . '_helper_updates_count';
+		$option_prefix = Main::get_config( 'option_name', 'wp_plugin_updates_data' );
+		$cache_key     = sanitize_key( '_' . $option_prefix . '_helper_updates_count' );
 		$count         = get_transient( $cache_key );
 		
 		if ( false !== $count ) {
@@ -255,7 +255,7 @@ class Updater {
 	 * @return bool
 	 */
 	public static function has_extension_update( $slug ) {
-		$option_prefix = Main::get_config( 'option_name', 'wp_plugin_updates' );
+		$option_prefix = Main::get_config( 'option_name', 'wp_plugin_updates_data' );
 
 		if ( ! get_transient( '_' . $option_prefix . '_update_check' ) ) {
 			return false;
@@ -277,7 +277,7 @@ class Updater {
 	 * Flushes cached update data.
 	 */
 	public static function flush_updates_cache() {
-		$option_prefix = Main::get_config( 'option_name', 'wp_plugin_updates' );
+		$option_prefix = Main::get_config( 'option_name', 'wp_plugin_updates_data' );
 		delete_transient( '_' . $option_prefix . '_update_check' );
 		delete_transient( '_' . $option_prefix . '_helper_updates_count' );
 		delete_site_transient( 'update_plugins' );
@@ -287,7 +287,7 @@ class Updater {
 	 * Fires when a user successfully updated a plugin.
 	 */
 	public static function upgrader_process_complete() {
-		$option_prefix = Main::get_config( 'option_name', 'wp_plugin_updates' );
+		$option_prefix = Main::get_config( 'option_name', 'wp_plugin_updates_data' );
 		delete_transient( '_' . $option_prefix . '_helper_updates_count' );
 	}
 
@@ -335,8 +335,8 @@ class Updater {
 			$versions_api_url
 		);
 
-		$option_prefix = Main::get_config( 'option_name', 'wp_plugin_updates' );
-		$key           = $option_prefix . '_versions_' . md5( $endpoint );
+		$option_prefix = Main::get_config( 'option_name', 'wp_plugin_updates_data' );
+		$key           = sanitize_key( $option_prefix . '_versions_' . md5( $endpoint ) );
 		$new_response  = get_transient( $key );
 
 		if ( false === $new_response ) {
