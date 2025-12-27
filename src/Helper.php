@@ -45,9 +45,7 @@ class Helper {
 		Main::init( array_merge( Main::get_config( '', array() ), array( 'helper_args' => $args ) ) );
 
 		if ( ! empty( $args['rest_namespace'] ) ) {
-			add_action( 'rest_api_init', function() use ( $args ) {
-				Helper::register_rest_routes( $args );
-			} );
+			add_action( 'rest_api_init', array( __CLASS__, 'register_rest_routes_callback' ) );
 		}
 
 		if ( ! empty( $args['enable_admin_notices'] ) ) {
@@ -55,6 +53,16 @@ class Helper {
 		}
 
 		do_action( 'wp_plugin_updates_helper_loaded' );
+	}
+
+	/**
+	 * Callback for REST API init that passes arguments.
+	 */
+	public static function register_rest_routes_callback() {
+		$helper_args = Main::get_config( 'helper_args', array() );
+		if ( ! empty( $helper_args ) ) {
+			self::register_rest_routes( $helper_args );
+		}
 	}
 
 	/**

@@ -117,7 +117,7 @@ class Updater {
 		$cache_key     = sanitize_key( '_' . $option_prefix . '_update_check' );
 		$data          = get_transient( $cache_key );
 		
-		if ( false !== $data && isset( $data['hash'] ) && hash_equals( $hash, $data['hash'] ) ) {
+		if ( false !== $data && ! empty( $data['hash'] ) && hash_equals( $hash, $data['hash'] ) ) {
 			return $data['downloads'];
 		}
 
@@ -129,7 +129,13 @@ class Updater {
 		);
 
 		// Allow filtering of plugin identifiers before making API request
+		// The filter receives the slugs and should return the same number of identifiers in the same order
 		$plugin_identifiers = apply_filters( 'wp_plugin_updates_identifiers', $payload, Main::get_config( 'plugin_prefix', '' ) );
+
+		// Ensure the arrays have the same count
+		if ( count( $plugin_identifiers ) !== count( $payload ) ) {
+			$plugin_identifiers = $payload;
+		}
 
 		$license_key = Main::get_active_license_key();
 		$endpoint    = add_query_arg(
@@ -164,13 +170,11 @@ class Updater {
 		} else {
 			$response = json_decode( wp_json_encode( $response ), true );
 			
-			// Map plugin identifiers back to slugs
-			$identifier_to_slug = array_combine( $plugin_identifiers, $payload );
-			
-			foreach ( $plugin_identifiers as $identifier ) {
-				$slug = isset( $identifier_to_slug[ $identifier ] ) ? $identifier_to_slug[ $identifier ] : '';
+			// Map plugin identifiers back to slugs - both arrays should have same count
+			foreach ( $payload as $index => $slug ) {
+				$identifier = isset( $plugin_identifiers[ $index ] ) ? $plugin_identifiers[ $index ] : '';
 				
-				if ( empty( $slug ) ) {
+				if ( empty( $identifier ) || empty( $slug ) ) {
 					continue;
 				}
 				

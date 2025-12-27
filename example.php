@@ -268,6 +268,7 @@ class My_Plugin {
 		// Only load helper in admin
 		if ( is_admin() ) {
 			$this->init_helper();
+			add_action( 'admin_notices', array( $this, 'display_stored_notices' ) );
 		}
 	}
 
@@ -285,13 +286,23 @@ class My_Plugin {
 	}
 
 	public function show_notice( $message, $type ) {
-		add_action( 'admin_notices', function() use ( $message, $type ) {
+		// Store notice in a transient to display on next page load
+		set_transient( 'my_plugin_admin_notice', array(
+			'message' => $message,
+			'type'    => $type,
+		), 30 );
+	}
+
+	public function display_stored_notices() {
+		$notice = get_transient( 'my_plugin_admin_notice' );
+		if ( $notice ) {
 			printf(
 				'<div class="notice notice-%s is-dismissible"><p>%s</p></div>',
-				esc_attr( $type ),
-				wp_kses_post( $message )
+				esc_attr( $notice['type'] ),
+				wp_kses_post( $notice['message'] )
 			);
-		} );
+			delete_transient( 'my_plugin_admin_notice' );
+		}
 	}
 }
 
