@@ -11,6 +11,8 @@ defined( 'ABSPATH' ) || exit;
  * Helper Class
  *
  * The main entry-point for all things related to the Helper.
+ * This class provides optional UI functionality and can be skipped if you're handling
+ * license management through your own interface.
  *
  * @since 1.5.0
  *
@@ -22,79 +24,90 @@ class Helper {
 
 	/**
 	 * Loads the helper class, runs on init.
+	 *
+	 * @param array $args Optional arguments for configuring the helper.
+	 *                    - 'rest_namespace' (string) REST API namespace. Default: 'wp-plugin-updates/v1'
+	 *                    - 'permission_callback' (callable) Permission callback for REST routes. Default: 'manage_options'
+	 *                    - 'enable_admin_notices' (bool) Whether to show admin notices. Default: false
+	 *                    - 'notice_callback' (callable) Callback to display success/error notices.
 	 */
-	public static function load() {
+	public static function load( $args = array() ) {
+		$defaults = array(
+			'rest_namespace'       => 'wp-plugin-updates/v1',
+			'permission_callback'  => 'manage_options',
+			'enable_admin_notices' => false,
+			'notice_callback'      => null,
+		);
 
-		add_action( 'admin_init', array( __CLASS__, 'admin_init' ) );
-		add_action( 'admin_notices', array( __CLASS__, 'admin_notices' ) );
-		add_action( 'rest_api_init', array( __CLASS__, 'register_rest_routes' ) );
+		$args = wp_parse_args( $args, $defaults );
 
-		do_action( 'noptin_com_helper_loaded' );
+		// Store args for later use
+		Main::init( array_merge( Main::get_config( '', array() ), array( 'helper_args' => $args ) ) );
+
+		if ( ! empty( $args['rest_namespace'] ) ) {
+			add_action( 'rest_api_init', function() use ( $args ) {
+				Helper::register_rest_routes( $args );
+			} );
+		}
+
+		if ( ! empty( $args['enable_admin_notices'] ) ) {
+			add_action( 'admin_notices', array( __CLASS__, 'admin_notices' ) );
+		}
+
+		do_action( 'wp_plugin_updates_helper_loaded' );
 	}
 
 	/**
 	 * Register REST API routes.
+	 *
+	 * @param array $args Helper arguments.
 	 */
-	public static function register_rest_routes() {
+	public static function register_rest_routes( $args ) {
+		$namespace           = $args['rest_namespace'];
+		$permission_callback = $args['permission_callback'];
+
+		// If it's a string, convert it to a callable checking the capability
+		if ( is_string( $permission_callback ) ) {
+			$capability          = $permission_callback;
+			$permission_callback = function () use ( $capability ) {
+				return current_user_can( $capability );
+			};
+		}
+
 		register_rest_route(
-			'noptin/v1',
+			$namespace,
 			'/license/activate',
 			array(
 				'methods'             => \WP_REST_Server::CREATABLE,
 				'callback'            => array( __CLASS__, 'rest_activate_license' ),
-				'permission_callback' => function () {
-					return current_user_can( get_noptin_capability() );
-				},
+				'permission_callback' => $permission_callback,
 				'args'                => array(
 					'license_key' => array(
 						'required'          => true,
 						'type'              => 'string',
 						'sanitize_callback' => 'sanitize_text_field',
-						'description'       => __( 'The license key to activate.', 'newsletter-optin-box' ),
+						'description'       => __( 'The license key to activate.', Main::get_config( 'text_domain' ) ),
 					),
 				),
 			)
 		);
 
 		register_rest_route(
-			'noptin/v1',
+			$namespace,
 			'/license/deactivate',
 			array(
 				'methods'             => \WP_REST_Server::DELETABLE,
 				'callback'            => array( __CLASS__, 'handle_license_deactivation' ),
-				'permission_callback' => function () {
-					return current_user_can( get_noptin_capability() );
-				},
+				'permission_callback' => $permission_callback,
 			)
 		);
-	}
-
-	/**
-	 * Fires after admin screen inits.
-	 */
-	public static function admin_init() {
-
-		if ( ! current_user_can( get_noptin_capability() ) ) {
-			return;
-		}
-
-		// Handle license deactivation.
-		if ( isset( $_GET['noptin-deactivate-license-nonce'] ) && wp_verify_nonce( rawurldecode( $_GET['noptin-deactivate-license-nonce'] ), 'noptin-deactivate-license' ) ) {
-			self::handle_license_deactivation();
-			wp_safe_redirect( remove_query_arg( 'noptin-deactivate-license-nonce' ) );
-			exit;
-		}
-
-		// Handle license activation.
-		if ( isset( $_POST['noptin-license'] ) && isset( $_POST['noptin_save_license_key_nonce'] ) && wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['noptin_save_license_key_nonce'] ) ), 'noptin_save_license_key' ) ) {
-			self::handle_license_save( sanitize_text_field( wp_unslash( $_POST['noptin-license'] ) ) );
-		}
 	}
 
 	/**
 	 * Saves a license key.
 	 *
 	 * @param string $license_key The license key to save.
+	 * @return bool|WP_Error True on success, WP_Error on failure.
 	 */
 	private static function handle_license_save( $license_key ) {
 
@@ -102,24 +115,36 @@ class Helper {
 		$license_key = sanitize_text_field( $license_key );
 
 		if ( empty( $license_key ) ) {
-			return;
+			return false;
+		}
+
+		$option_prefix   = Main::get_config( 'option_name', 'wp_plugin_updates' );
+		$license_api_url = Main::get_config( 'license_api_url' );
+
+		if ( empty( $license_api_url ) ) {
+			self::$activation_error = __( 'License API URL is not configured.', Main::get_config( 'text_domain' ) );
+			return false;
 		}
 
 		// Delete cached details.
-		delete_transient( sanitize_key( 'noptin_license_' . $license_key ) );
+		delete_transient( sanitize_key( $option_prefix . '_license_' . $license_key ) );
+
+		$headers = array_merge(
+			array(
+				'Accept' => 'application/json',
+			),
+			Main::get_config( 'api_headers', array() )
+		);
 
 		// Activate the license key remotely.
 		$result = Main::process_api_response(
 			wp_remote_post(
-				'https://my.noptin.com/wp-json/hizzle/v1/licenses/' . $license_key . '/activate',
+				trailingslashit( $license_api_url ) . $license_key . '/activate',
 				array(
 					'body'    => array(
 						'website' => home_url(),
 					),
-					'headers' => array(
-						'Accept'           => 'application/json',
-						'X-Requested-With' => 'Noptin',
-					),
+					'headers' => $headers,
 				)
 			)
 		);
@@ -129,7 +154,7 @@ class Helper {
 			self::$temporary_key    = $license_key;
 			self::$activation_error = sprintf(
 				/* translators: %s: Error message. */
-				__( 'There was an error activating your license key: %s', 'newsletter-optin-box' ),
+				__( 'There was an error activating your license key: %s', Main::get_config( 'text_domain' ) ),
 				$result->get_error_message()
 			);
 			return false;
@@ -141,8 +166,23 @@ class Helper {
 
 		Updater::flush_updates_cache();
 
-		noptin()->admin->show_success( __( 'Your license key has been activated successfully. You will now receive updates and support for this website.', 'newsletter-optin-box' ) );
+		self::show_notice( __( 'Your license key has been activated successfully. You will now receive updates and support for this website.', Main::get_config( 'text_domain' ) ), 'success' );
 		return $result;
+	}
+
+	/**
+	 * Show a notice (uses callback if provided, otherwise does nothing).
+	 *
+	 * @param string $message The notice message.
+	 * @param string $type The notice type (success, error, warning, info).
+	 */
+	private static function show_notice( $message, $type = 'info' ) {
+		$helper_args     = Main::get_config( 'helper_args', array() );
+		$notice_callback = isset( $helper_args['notice_callback'] ) ? $helper_args['notice_callback'] : null;
+
+		if ( is_callable( $notice_callback ) ) {
+			call_user_func( $notice_callback, $message, $type );
+		}
 	}
 
 	/**
@@ -166,7 +206,7 @@ class Helper {
 
 			return new \WP_Error(
 				'activation_failed',
-				'There was an error activating your license key.',
+				__( 'There was an error activating your license key.', Main::get_config( 'text_domain' ) ),
 				array( 'status' => 400 )
 			);
 		}
@@ -174,7 +214,7 @@ class Helper {
 		return rest_ensure_response(
 			array(
 				'success' => true,
-				'message' => __( 'Your license key has been activated successfully. You will now receive updates and support for this website.', 'newsletter-optin-box' ),
+				'message' => __( 'Your license key has been activated successfully. You will now receive updates and support for this website.', Main::get_config( 'text_domain' ) ),
 				'data'    => $result,
 			)
 		);
@@ -183,6 +223,7 @@ class Helper {
 	/**
 	 * Handle license deactivation.
 	 *
+	 * @return array|WP_Error
 	 */
 	public static function handle_license_deactivation() {
 
@@ -191,37 +232,49 @@ class Helper {
 		if ( empty( $license_key ) ) {
 			return array(
 				'success' => true,
-				'message' => __( 'License key deactivated successfully. You will no longer receive product updates and support for this site.', 'newsletter-optin-box' ),
+				'message' => __( 'License key deactivated successfully. You will no longer receive product updates and support for this site.', Main::get_config( 'text_domain' ) ),
 			);
 		}
 
-		// Delete cached details.
-		delete_transient( sanitize_key( 'noptin_license_' . $license_key ) );
+		$option_prefix   = Main::get_config( 'option_name', 'wp_plugin_updates' );
+		$license_api_url = Main::get_config( 'license_api_url' );
 
-		// Deactive the license key remotely.
+		if ( empty( $license_api_url ) ) {
+			return new \WP_Error( 'missing_config', __( 'License API URL is not configured.', Main::get_config( 'text_domain' ) ) );
+		}
+
+		// Delete cached details.
+		delete_transient( sanitize_key( $option_prefix . '_license_' . $license_key ) );
+
+		$headers = array_merge(
+			array(
+				'Accept' => 'application/json',
+			),
+			Main::get_config( 'api_headers', array() )
+		);
+
+		// Deactivate the license key remotely.
 		$result = Main::process_api_response(
 			wp_remote_post(
-				'https://my.noptin.com/wp-json/hizzle/v1/licenses/' . $license_key . '/deactivate',
+				trailingslashit( $license_api_url ) . $license_key . '/deactivate',
 				array(
 					'body'    => array(
 						'website' => home_url(),
 					),
-					'headers' => array(
-						'Accept'           => 'application/json',
-						'X-Requested-With' => 'Noptin',
-					),
+					'headers' => $headers,
 				)
 			)
 		);
 
 		// Abort if there was an error.
 		if ( is_wp_error( $result ) ) {
-			noptin()->admin->show_error(
+			self::show_notice(
 				sprintf(
 					/* translators: %s: Error message. */
-					__( 'There was an error deactivating your license key: %s', 'newsletter-optin-box' ),
+					__( 'There was an error deactivating your license key: %s', Main::get_config( 'text_domain' ) ),
 					$result->get_error_message()
-				)
+				),
+				'error'
 			);
 
 			return $result;
@@ -232,153 +285,19 @@ class Helper {
 
 		Updater::flush_updates_cache();
 
-		noptin()->admin->show_success( __( 'License key deactivated successfully. You will no longer receive product updates and support for this site.', 'newsletter-optin-box' ) );
+		self::show_notice( __( 'License key deactivated successfully. You will no longer receive product updates and support for this site.', Main::get_config( 'text_domain' ) ), 'success' );
 		return array(
 			'success' => true,
-			'message' => __( 'License key deactivated successfully. You will no longer receive product updates and support for this site.', 'newsletter-optin-box' ),
+			'message' => __( 'License key deactivated successfully. You will no longer receive product updates and support for this site.', Main::get_config( 'text_domain' ) ),
 		);
 	}
 
 	/**
 	 * Various Helper-related admin notices.
+	 * This is a generic implementation that can be overridden via filters.
 	 */
 	public static function admin_notices() {
-
-		self::maybe_print_expired_license_key_notice();
-
-		$screen    = get_current_screen();
-		$screen_id = $screen ? $screen->id : '';
-
-		if ( 'update-core' !== $screen_id && 'plugins' !== $screen_id ) {
-			return;
-		}
-
-		// Don't nag if Noptin doesn't have an update available.
-		if ( ! self::noptin_core_update_available() ) {
-			return;
-		}
-
-		// Add a note about available extension updates if Noptin core has an update available.
-		$notice = self::get_extensions_update_notice();
-		if ( ! empty( $notice ) ) {
-			printf(
-				'<div class="updated noptin-message"><p>%s</p></div>',
-				wp_kses_post( $notice )
-			);
-		}
-	}
-
-	/**
-	 * Checks if we should print an expired license key notice.
-	 *
-	 */
-	public static function maybe_print_expired_license_key_notice() {
-
-		// Fetch premium add-ons.
-		$premium_addons = array();
-
-		if ( defined( 'NOPTIN_ADDONS_PACK_VERSION' ) ) {
-			$premium_addons[] = 'Noptin Addons Pack';
-		}
-
-		$premium_addons = apply_filters( 'noptin_com_helper_premium_addons', $premium_addons );
-
-		// Abort if none exists.
-		if ( empty( $premium_addons ) ) {
-			return;
-		}
-
-		// Check if we have an active license key.
-		$license = Main::get_active_license_key( true );
-		$notice  = __( 'You need an active license key to keep using premium Noptin Addons.', 'newsletter-optin-box' );
-
-		// Add WordPress error message if any.
-		if ( is_wp_error( $license ) ) {
-			$notice .= ' ' . sprintf(
-				/* translators: %s: Error message. */
-				__( 'There was an error checking your license key: %s', 'newsletter-optin-box' ),
-				'<code>' . $license->get_error_message() . '</code>'
-			);
-		}
-
-		// Add active addons.
-		if ( 1 === count( $premium_addons ) ) {
-			$notice .= "\n\n" . sprintf(
-				/* translators: %s: Addon name. */
-				__( 'The following addon is currently active: %s', 'newsletter-optin-box' ),
-				'<code>' . $premium_addons[0] . '</code>'
-			);
-		} else {
-			$notice .= "\n\n" . sprintf(
-				/* translators: %s: Addon names. */
-				__( 'The following addons are currently active: %s.', 'newsletter-optin-box' ),
-				'<code>' . implode( '</code>, <code>', $premium_addons ) . '</code>'
-			);
-		}
-
-		// Add a link to the license page.
-		$notice .= "\n\n" . '<a href="' . esc_url( admin_url( 'admin.php?page=noptin-addons' ) ) . '" class="button button-primary">' . __( 'Manage your license key', 'newsletter-optin-box' ) . '</a>';
-
-		if ( empty( $license ) || is_wp_error( $license ) || empty( $license->is_active_on_site ) ) {
-			printf(
-				'<div class="error noptin-message">%s</div>',
-				wp_kses_post( wpautop( $notice ) )
-			);
-		}
-	}
-
-	/**
-	 * Get an update notice if one or more Noptin extensions has an update available.
-	 *
-	 * @return string|null The update notice or null if everything is up to date.
-	 */
-	private static function get_extensions_update_notice() {
-		$plugins   = Main::get_installed_addons();
-		$updates   = Updater::get_update_data();
-		$available = 0;
-
-		foreach ( $plugins as $data ) {
-			if ( empty( $updates[ $data['slug'] ] ) ) {
-				continue;
-			}
-
-			if ( version_compare( $updates[ $data['slug'] ]['version'], $data['Version'], '>' ) ) {
-				++$available;
-			}
-		}
-
-		if ( ! $available ) {
-			return;
-		}
-
-		return sprintf(
-			/* translators: %1$s: helper url, %2$d: number of extensions */
-			_n( 'Note: You currently have <a href="%1$s">%2$d paid extension</a> which should be updated first before updating Noptin.', 'Note: You currently have <a href="%1$s">%2$d paid extensions</a> which should be updated first before updating Noptin.', $available, 'newsletter-optin-box' ),
-			admin_url( 'admin.php?page=noptin-addons' ),
-			$available
-		);
-	}
-
-	/**
-	 * Whether Noptin has an update available.
-	 *
-	 * @return bool True if a Noptin core update is available.
-	 */
-	private static function noptin_core_update_available() {
-		$updates = get_site_transient( 'update_plugins' );
-		if ( empty( $updates->response ) ) {
-			return false;
-		}
-
-		if ( empty( $updates->response['newsletter-optin-box/noptin.php'] ) ) {
-			return false;
-		}
-
-		$data = $updates->response['newsletter-optin-box/noptin.php'];
-		if ( version_compare( noptin()->version, $data->new_version, '>=' ) ) {
-			return false;
-		}
-
-		return true;
+		// Allow custom implementations to handle this
+		do_action( 'wp_plugin_updates_admin_notices' );
 	}
 }

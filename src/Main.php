@@ -10,17 +10,77 @@ defined( 'ABSPATH' ) || exit;
 /**
  * Main Class
  *
- * Main class for noptin.com connected sites.
+ * Main class for managing plugin updates and licenses.
  * @ignore
  */
 class Main {
+
+	/**
+	 * Configuration options.
+	 *
+	 * @var array
+	 */
+	private static $config = array();
 
 	/**
 	 * The option name used to store the helper data.
 	 *
 	 * @var string
 	 */
-	private static $option_name = 'noptin_helper_data';
+	private static $option_name = 'wp_plugin_updates_data';
+
+	/**
+	 * Initialize the updater with configuration.
+	 *
+	 * @param array $config Configuration array with the following keys:
+	 *                      - 'api_url' (string) Required. Base URL of your licensing server.
+	 *                      - 'license_api_url' (string) Optional. URL for license API. Defaults to {api_url}/wp-json/hizzle/v1/licenses.
+	 *                      - 'versions_api_url' (string) Optional. URL for versions API. Defaults to {api_url}/wp-json/hizzle_download/v1/versions.
+	 *                      - 'option_name' (string) Optional. WordPress option name to store data. Defaults to 'wp_plugin_updates_data'.
+	 *                      - 'plugin_prefix' (string) Optional. Prefix for your plugins. Defaults to ''.
+	 *                      - 'text_domain' (string) Optional. Text domain for translations. Defaults to 'default'.
+	 *                      - 'api_headers' (array) Optional. Additional headers to send with API requests. Defaults to array().
+	 *                      - 'product_url' (string) Optional. URL to your product/pricing page. Defaults to ''.
+	 *                      - 'manage_license_page' (string) Optional. Admin page slug for managing licenses. Defaults to ''.
+	 */
+	public static function init( $config = array() ) {
+		$defaults = array(
+			'api_url'            => '',
+			'license_api_url'    => '',
+			'versions_api_url'   => '',
+			'option_name'        => 'wp_plugin_updates_data',
+			'plugin_prefix'      => '',
+			'text_domain'        => 'default',
+			'api_headers'        => array(),
+			'product_url'        => '',
+			'manage_license_page' => '',
+		);
+
+		self::$config = wp_parse_args( $config, $defaults );
+
+		// Set derived URLs if not provided
+		if ( empty( self::$config['license_api_url'] ) && ! empty( self::$config['api_url'] ) ) {
+			self::$config['license_api_url'] = trailingslashit( self::$config['api_url'] ) . 'wp-json/hizzle/v1/licenses';
+		}
+
+		if ( empty( self::$config['versions_api_url'] ) && ! empty( self::$config['api_url'] ) ) {
+			self::$config['versions_api_url'] = trailingslashit( self::$config['api_url'] ) . 'wp-json/hizzle_download/v1/versions';
+		}
+
+		// Update option name
+		self::$option_name = self::$config['option_name'];
+	}
+
+	/**
+	 * Get a configuration value.
+	 *
+	 * @param string $key Configuration key.
+	 * @param mixed  $default Default value if key doesn't exist.
+	 * @return mixed Configuration value.
+	 */
+	public static function get_config( $key, $default = '' ) {
+		return isset( self::$config[ $key ] ) ? self::$config[ $key ] : $default;
+	}
 
 	/**
 	 * Get an option by key
@@ -127,7 +187,7 @@ class Main {
 	 */
 	private static function fetch_license_details( $license_key ) {
 		$license_key = sanitize_text_field( $license_key );
-		$cache_key   = sanitize_key( 'noptin_license_' . $license_key );
+		$cache_key   = sanitize_key( self::get_config( 'option_name', 'wp_plugin_updates' ) . '_license_' . $license_key );
 		$cached      = get_transient( $cache_key );
 
 		// Abort early if details were cached.
@@ -135,16 +195,25 @@ class Main {
 			return $cached;
 		}
 
+		$license_api_url = self::get_config( 'license_api_url' );
+		if ( empty( $license_api_url ) ) {
+			return new \WP_Error( 'missing_config', __( 'License API URL is not configured.', self::get_config( 'text_domain' ) ) );
+		}
+
+		$headers = array_merge(
+			array(
+				'Accept' => 'application/json',
+			),
+			self::get_config( 'api_headers', array() )
+		);
+
 		// Fetch details remotely.
 		$license = self::process_api_response(
 			wp_remote_get(
-				"https://my.noptin.com/wp-json/hizzle/v1/licenses/$license_key/?website=" . rawurlencode( home_url() ),
+				trailingslashit( $license_api_url ) . $license_key . '/?website=' . rawurlencode( home_url() ),
 				array(
 					'timeout' => 15,
-					'headers' => array(
-						'Accept'           => 'application/json',
-						'X-Requested-With' => 'Noptin',
-					),
+					'headers' => $headers,
 				)
 			)
 		);
@@ -154,7 +223,7 @@ class Main {
 		}
 
 		if ( empty( $license ) || empty( $license->license ) ) {
-			return new \WP_Error( 'invalid_license', __( 'Error fetching your license key.', 'newsletter-optin-box' ) );
+			return new \WP_Error( 'invalid_license', __( 'Error fetching your license key.', self::get_config( 'text_domain' ) ) );
 		}
 
 		$license = $license->license;
@@ -180,7 +249,7 @@ class Main {
 		$res = json_decode( wp_remote_retrieve_body( $response ) );
 
 		if ( empty( $res ) ) {
-			return new \WP_Error( 'invalid_response', __( 'Invalid response from the server.', 'newsletter-optin-box' ) );
+			return new \WP_Error( 'invalid_response', __( 'Invalid response from the server.', self::get_config( 'text_domain' ) ) );
 		}
 
 		if ( isset( $res->code ) && isset( $res->message ) ) {
@@ -188,63 +257,6 @@ class Main {
 		}
 
 		return $res;
-	}
-
-	/**
-	 * Get by slug.
-	 *
-	 * @param string $slug
-	 * @param array $items
-	 * @return object|false
-	 */
-	private static function get_by_slug( $slug, $items ) {
-
-		if ( ! is_array( $items ) ) {
-			return false;
-		}
-
-		foreach ( $items as $item ) {
-			if ( $item->slug === $slug ) {
-				return $item;
-			}
-		}
-
-		return false;
-	}
-
-	/**
-	 * Retrieves a single connection.
-	 *
-	 * @param string $slug
-	 * @return object|false
-	 */
-	public static function get_connection( $slug ) {
-		return self::get_by_slug( $slug, self::get_connections() );
-	}
-
-	/**
-	 * Retrieves all connections.
-	 *
-	 */
-	public static function get_connections() {
-
-		// Read from cache.
-		$cached = get_transient( 'noptin_com_connections' );
-
-		if ( is_array( $cached ) ) {
-			return $cached;
-		}
-
-		// Fetch the connections.
-		$result = self::process_api_response( wp_remote_get( 'https://noptin.com/wp-content/uploads/noptin/connections.json' ) );
-
-		if ( ! is_array( $result ) ) {
-			$result = json_decode( file_get_contents( plugin_dir_path( __FILE__ ) . 'connections.json' ) );
-		}
-
-		// Cache the connections.
-		set_transient( 'noptin_com_connections', $result, 12 * HOUR_IN_SECONDS );
-		return $result;
 	}
 
 	/**
@@ -258,19 +270,21 @@ class Main {
 			require_once ABSPATH . 'wp-admin/includes/plugin.php';
 		}
 
-		$noptin_plugins = array();
+		$prefix  = self::get_config( 'plugin_prefix', '' );
+		$plugins = array();
 
 		foreach ( get_plugins() as $filename => $data ) {
 			$slug = basename( dirname( $filename ) );
 
-			if ( 0 === strpos( $slug, 'noptin-' ) ) {
-				$data['_filename']           = $filename;
-				$data['slug']                = $slug;
-				$data['_type']               = 'plugin';
-				$noptin_plugins[ $filename ] = $data;
+			// If no prefix is set, include all plugins
+			if ( empty( $prefix ) || 0 === strpos( $slug, $prefix ) ) {
+				$data['_filename']       = $filename;
+				$data['slug']            = $slug;
+				$data['_type']           = 'plugin';
+				$plugins[ $filename ]    = $data;
 			}
 		}
 
-		return $noptin_plugins;
+		return $plugins;
 	}
 }

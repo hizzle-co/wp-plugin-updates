@@ -1,0 +1,22 @@
+{
+    "name": "hizzle/wp-plugin-updates",
+    "description": "A flexible WordPress plugin updater library for serving updates from any custom server",
+    "type": "library",
+    "keywords": ["wordpress", "plugin", "updates", "updater", "license"],
+    "license": "GPL-3.0-or-later",
+    "authors": [
+        {
+            "name": "Hizzle",
+            "email": "support@hizzle.co"
+        }
+    ],
+    "require": {
+        "php": ">=5.6"
+    },
+    "autoload": {
+        "psr-4": {
+            "Hizzle\\WP_Plugin_Updates\\": "src/"
+        }
+    },
+    "minimum-stability": "stable"
+}

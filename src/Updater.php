@@ -28,7 +28,6 @@ class Updater {
 		add_filter( 'plugins_api', array( __CLASS__, 'plugins_api' ), 20, 3 );
 		add_action( 'plugins_loaded', array( __CLASS__, 'add_notice_unlicensed_product' ), 10, 4 );
 		add_filter( 'site_transient_update_plugins', array( __CLASS__, 'change_update_information' ) );
-		add_filter( 'noptin_email_settings_misc', array( __CLASS__, 'filter_email_settings' ) );
 	}
 
 	/**
@@ -41,10 +40,12 @@ class Updater {
 	 */
 	public static function transient_update_plugins( $transient ) {
 		$update_data = self::get_update_data();
+		$product_url = Main::get_config( 'product_url', '' );
+		$prefix      = Main::get_config( 'plugin_prefix', '' );
 
 		foreach ( Main::get_installed_addons() as $plugin ) {
 
-			// Skip if the plugin is not from noptin.com.
+			// Skip if the plugin doesn't have update data.
 			if ( empty( $update_data[ $plugin['slug'] ] ) || empty( $update_data[ $plugin['slug'] ]['version'] ) ) {
 				continue;
 			}
@@ -53,11 +54,11 @@ class Updater {
 			$filename = $plugin['_filename'];
 
 			$item = array(
-				'id'             => 'noptin-com-' . $plugin['slug'],
+				'id'             => sanitize_key( $prefix . '-' . $plugin['slug'] ),
 				'slug'           => $plugin['slug'],
 				'plugin'         => $filename,
 				'new_version'    => $data['version'],
-				'url'            => 'https://noptin.com/pricing/',
+				'url'            => $product_url,
 				'package'        => empty( $data['download_link'] ) ? '' : $data['download_link'],
 				'requires_php'   => empty( $data['requires_php'] ) ? '5.6' : $data['requires_php'],
 				'upgrade_notice' => '',
@@ -104,12 +105,19 @@ class Updater {
 			return array();
 		}
 
+		$versions_api_url = Main::get_config( 'versions_api_url' );
+		if ( empty( $versions_api_url ) ) {
+			return array();
+		}
+
 		sort( $payload );
 
-		$hash      = md5( wp_json_encode( $payload ) . Main::get_active_license_key() );
-		$cache_key = '_noptin_update_check';
-		$data      = get_transient( $cache_key );
-		if ( false !== $data && hash_equals( $hash, $data['hash'] ) ) {
+		$option_prefix = Main::get_config( 'option_name', 'wp_plugin_updates' );
+		$hash          = md5( wp_json_encode( $payload ) . Main::get_active_license_key() );
+		$cache_key     = '_' . $option_prefix . '_update_check';
+		$data          = get_transient( $cache_key );
+		
+		if ( false !== $data && isset( $data['hash'] ) && hash_equals( $hash, $data['hash'] ) ) {
 			return $data['downloads'];
 		}
 
@@ -120,21 +128,25 @@ class Updater {
 			'errors'    => array(),
 		);
 
-		$git_urls = array();
-
-		foreach ( $payload as $slug ) {
-			$git_urls[ $slug ] = 'hizzle-co/' . sanitize_key( $slug );
-		}
+		// Allow filtering of plugin identifiers before making API request
+		$plugin_identifiers = apply_filters( 'wp_plugin_updates_identifiers', $payload, Main::get_config( 'plugin_prefix', '' ) );
 
 		$license_key = Main::get_active_license_key();
 		$endpoint    = add_query_arg(
 			array(
 				'hizzle_license_url' => empty( $license_key ) ? false : rawurlencode( home_url() ),
-				'hizzle_license'     => empty( $license_key ) ? false : rawurlencode( Main::get_active_license_key() ),
-				'downloads'          => rawurlencode( implode( ',', $git_urls ) ),
+				'hizzle_license'     => empty( $license_key ) ? false : rawurlencode( $license_key ),
+				'downloads'          => rawurlencode( implode( ',', $plugin_identifiers ) ),
 				'hash'               => $hash,
 			),
-			'https://my.noptin.com/wp-json/hizzle_download/v1/versions'
+			$versions_api_url
+		);
+
+		$headers = array_merge(
+			array(
+				'Accept' => 'application/json',
+			),
+			Main::get_config( 'api_headers', array() )
 		);
 
 		$response = Main::process_api_response(
@@ -142,10 +154,7 @@ class Updater {
 				$endpoint,
 				array(
 					'timeout' => 15,
-					'headers' => array(
-						'Accept'           => 'application/json',
-						'X-Requested-With' => 'Noptin',
-					),
+					'headers' => $headers,
 				)
 			)
 		);
@@ -153,19 +162,24 @@ class Updater {
 		if ( is_wp_error( $response ) ) {
 			$data['errors'][] = $response->get_error_message();
 		} else {
-			foreach ( $git_urls as $slug => $git_url ) {
-				$response = json_decode( wp_json_encode( $response ), true );
-				if ( ! empty( $response[ $git_url ]['error'] ) ) {
-					$data['errors'][] = $response[ $git_url ]['error'];
+			$response = json_decode( wp_json_encode( $response ), true );
+			
+			foreach ( $plugin_identifiers as $index => $identifier ) {
+				$slug = $payload[ $index ];
+				
+				if ( ! empty( $response[ $identifier ]['error'] ) ) {
+					$data['errors'][] = $response[ $identifier ]['error'];
 					continue;
 				}
 
-				$data['downloads'][ $slug ]         = $response[ $git_url ];
-				$data['downloads'][ $slug ]['slug'] = $slug;
+				if ( ! empty( $response[ $identifier ] ) ) {
+					$data['downloads'][ $slug ]         = $response[ $identifier ];
+					$data['downloads'][ $slug ]['slug'] = $slug;
+				}
 			}
 		}
 
-		delete_transient( '_noptin_helper_updates_count' );
+		delete_transient( '_' . $option_prefix . '_helper_updates_count' );
 		$seconds = empty( $data['errors'] ) ? DAY_IN_SECONDS : 30 * MINUTE_IN_SECONDS;
 		set_transient( $cache_key, $data, $seconds );
 		return $data['downloads'];
@@ -177,13 +191,15 @@ class Updater {
 	 * @return int The number of products with updates.
 	 */
 	public static function get_updates_count() {
-		$cache_key = '_noptin_helper_updates_count';
-		$count     = get_transient( $cache_key );
+		$option_prefix = Main::get_config( 'option_name', 'wp_plugin_updates' );
+		$cache_key     = '_' . $option_prefix . '_helper_updates_count';
+		$count         = get_transient( $cache_key );
+		
 		if ( false !== $count ) {
 			return $count;
 		}
 
-		if ( ! get_transient( '_noptin_update_check' ) ) {
+		if ( ! get_transient( '_' . $option_prefix . '_update_check' ) ) {
 			return 0;
 		}
 
@@ -232,8 +248,9 @@ class Updater {
 	 * @return bool
 	 */
 	public static function has_extension_update( $slug ) {
+		$option_prefix = Main::get_config( 'option_name', 'wp_plugin_updates' );
 
-		if ( ! get_transient( '_noptin_update_check' ) ) {
+		if ( ! get_transient( '_' . $option_prefix . '_update_check' ) ) {
 			return false;
 		}
 
@@ -253,8 +270,9 @@ class Updater {
 	 * Flushes cached update data.
 	 */
 	public static function flush_updates_cache() {
-		delete_transient( '_noptin_update_check' );
-		delete_transient( '_noptin_helper_updates_count' );
+		$option_prefix = Main::get_config( 'option_name', 'wp_plugin_updates' );
+		delete_transient( '_' . $option_prefix . '_update_check' );
+		delete_transient( '_' . $option_prefix . '_helper_updates_count' );
 		delete_site_transient( 'update_plugins' );
 	}
 
@@ -262,11 +280,12 @@ class Updater {
 	 * Fires when a user successfully updated a plugin.
 	 */
 	public static function upgrader_process_complete() {
-		delete_transient( '_noptin_helper_updates_count' );
+		$option_prefix = Main::get_config( 'option_name', 'wp_plugin_updates' );
+		delete_transient( '_' . $option_prefix . '_helper_updates_count' );
 	}
 
 	/**
-	 * Plugin information callback for Noptin extensions.
+	 * Plugin information callback for extensions.
 	 *
 	 * @param object $response The response core needs to display the modal.
 	 * @param string $action The requested plugins_api() action.
@@ -279,42 +298,54 @@ class Updater {
 			return $response;
 		}
 
-		// Only for slugs that start with noptin-
-		if ( 0 !== strpos( $args->slug, 'noptin-' ) ) {
+		$prefix = Main::get_config( 'plugin_prefix', '' );
+
+		// Only for slugs that match our prefix
+		if ( ! empty( $prefix ) && 0 !== strpos( $args->slug, $prefix ) ) {
 			return $response;
 		}
 
-		// Get download slug.
-		$download_slug = str_replace( 'noptin-plugin-with-slug-', '', sanitize_key( $args->slug ) );
-		$git_url       = 'hizzle-co/' . $download_slug;
-
-		// Abort if cannot get download slug.
-		if ( empty( $download_slug ) ) {
+		$versions_api_url = Main::get_config( 'versions_api_url' );
+		if ( empty( $versions_api_url ) ) {
 			return $response;
 		}
 
-		$endpoint = add_query_arg(
+		// Allow filtering to get the plugin identifier for the API
+		$plugin_identifier = apply_filters( 'wp_plugin_updates_plugin_identifier', $args->slug, $prefix );
+
+		// Abort if cannot get plugin identifier.
+		if ( empty( $plugin_identifier ) ) {
+			return $response;
+		}
+
+		$license_key = Main::get_active_license_key();
+		$endpoint    = add_query_arg(
 			array(
-				'hizzle_license_url' => rawurlencode( home_url() ),
-				'hizzle_license'     => rawurlencode( Main::get_active_license_key() ),
-				'downloads'          => rawurlencode( $git_url ),
+				'hizzle_license_url' => empty( $license_key ) ? false : rawurlencode( home_url() ),
+				'hizzle_license'     => empty( $license_key ) ? false : rawurlencode( $license_key ),
+				'downloads'          => rawurlencode( $plugin_identifier ),
 			),
-			'https://my.noptin.com/wp-json/hizzle_download/v1/versions'
+			$versions_api_url
 		);
 
-		$key          = 'noptin_versions_' . md5( $endpoint );
-		$new_response = get_transient( $key );
+		$option_prefix = Main::get_config( 'option_name', 'wp_plugin_updates' );
+		$key           = $option_prefix . '_versions_' . md5( $endpoint );
+		$new_response  = get_transient( $key );
 
 		if ( false === $new_response ) {
+			$headers = array_merge(
+				array(
+					'Accept' => 'application/json',
+				),
+				Main::get_config( 'api_headers', array() )
+			);
+
 			$new_response = Main::process_api_response(
 				wp_remote_get(
 					$endpoint,
 					array(
 						'timeout' => 15,
-						'headers' => array(
-							'Accept'           => 'application/json',
-							'X-Requested-With' => 'Noptin',
-						),
+						'headers' => $headers,
 					)
 				)
 			);
@@ -329,21 +360,21 @@ class Updater {
 		}
 
 		$new_response = json_decode( wp_json_encode( $new_response ), true );
-		if ( empty( $new_response[ $git_url ] ) ) {
-			return new \WP_Error( 'plugins_api_failed', __( 'Error fetching downloadable file', 'newsletter-optin-box' ) );
+		if ( empty( $new_response[ $plugin_identifier ] ) ) {
+			return new \WP_Error( 'plugins_api_failed', __( 'Error fetching downloadable file', Main::get_config( 'text_domain' ) ) );
 		}
 
-		if ( ! empty( $new_response[ $git_url ]['error'] ) ) {
-			if ( ! empty( $new_response[ $git_url ]['error']['error_code'] ) && 'download_file_not_found' === $new_response[ $git_url ]['error']['error_code'] ) {
+		if ( ! empty( $new_response[ $plugin_identifier ]['error'] ) ) {
+			if ( ! empty( $new_response[ $plugin_identifier ]['error']['error_code'] ) && 'download_file_not_found' === $new_response[ $plugin_identifier ]['error']['error_code'] ) {
 				return $response;
 			}
 
-			return new \WP_Error( 'plugins_api_failed', $new_response[ $git_url ]['error'] );
+			return new \WP_Error( 'plugins_api_failed', $new_response[ $plugin_identifier ]['error'] );
 		}
 
-		$new_response[ $git_url ]['slug'] = $args->slug;
+		$new_response[ $plugin_identifier ]['slug'] = $args->slug;
 
-		return (object) $new_response[ $git_url ];
+		return (object) $new_response[ $plugin_identifier ];
 	}
 
 	/**
@@ -369,34 +400,40 @@ class Updater {
 	 * @return void
 	 */
 	public static function need_license_message( $plugin_data, $r ) {
+		$manage_license_page = Main::get_config( 'manage_license_page', '' );
 
-		if ( empty( $r->package ) ) {
+		if ( empty( $r->package ) && ! empty( $manage_license_page ) ) {
 			printf(
 				'<span style="display: block;margin-top: 10px;font-weight: 600; color: #a00;">%s</span>',
 				sprintf(
 					/* translators: %s: updates page URL. */
-					wp_kses_post( __( 'To update, please <a href="%s">activate your license key</a>.', 'newsletter-optin-box' ) ),
-					esc_url( admin_url( 'admin.php?page=noptin-addons' ) )
+					wp_kses_post( __( 'To update, please <a href="%s">activate your license key</a>.', Main::get_config( 'text_domain' ) ) ),
+					esc_url( admin_url( 'admin.php?page=' . $manage_license_page ) )
 				)
 			);
 		}
 	}
 
 	/**
-	 * Change the update information for unlicensed Noptin products
+	 * Change the update information for unlicensed products
 	 *
 	 * @param  object $transient The update-plugins transient.
 	 * @return object
 	 */
 	public static function change_update_information( $transient ) {
+		$manage_license_page = Main::get_config( 'manage_license_page', '' );
+
+		if ( empty( $manage_license_page ) ) {
+			return $transient;
+		}
 
 		// If we are on the update core page, change the update message for unlicensed products.
 		global $pagenow;
 		if ( ( 'update-core.php' === $pagenow ) && $transient && isset( $transient->response ) && ! isset( $_GET['action'] ) ) {
 			$notice = sprintf(
 				/* translators: %s: updates page URL. */
-				__( 'To update, please <a href="%s">activate your license key</a>.', 'newsletter-optin-box' ),
-				admin_url( 'admin.php?page=noptin-addons' )
+				__( 'To update, please <a href="%s">activate your license key</a>.', Main::get_config( 'text_domain' ) ),
+				admin_url( 'admin.php?page=' . $manage_license_page )
 			);
 
 			foreach ( array_keys( Main::get_installed_addons() ) as $key ) {
@@ -407,40 +444,5 @@ class Updater {
 		}
 
 		return $transient;
-	}
-
-	/**
-	 * Filters the email settings.
-	 *
-	 * @param array $settings The email settings.
-	 * @return array
-	 */
-	public static function filter_email_settings( $settings ) {
-
-		// Installed add-ons.
-		$installed_addons    = wp_list_pluck( Main::get_installed_addons(), '_filename', 'slug' );
-		$slug                = 'noptin-addons-pack';
-		$settings['license'] = array(
-			'key'          => Main::get_active_license_key(),
-			'upgrade_url'  => noptin_get_upsell_url( 'pricing', 'upgrade', 'license' ),
-			'is_usable'    => defined( 'NOPTIN_ADDONS_PACK_VERSION' ),
-			'activate_url' => admin_url( 'admin.php?page=noptin-addons' ),
-			'install_text' => isset( $installed_addons[ $slug ] ) ? __( 'Activate', 'newsletter-optin-box' ) : __( 'Install', 'newsletter-optin-box' ),
-			'install_desc' => isset( $installed_addons[ $slug ] ) ?
-				__( 'Activate the Noptin Addons Pack addon to unlock.', 'newsletter-optin-box' ) :
-				__( 'Install the Noptin Addons Pack addon to unlock.', 'newsletter-optin-box' ),
-			'install_url'  => isset( $installed_addons[ $slug ] ) ?
-				str_replace( '&amp;', '&', wp_nonce_url( admin_url( 'plugins.php?action=activate&plugin=' . $installed_addons[ $slug ] ), 'activate-plugin_' . $installed_addons[ $slug ] ) ) :
-				str_replace( '&amp;', '&', wp_nonce_url( self_admin_url( 'update.php?action=install-plugin&plugin=noptin-plugin-with-slug-' . $slug ), 'install-plugin_noptin-plugin-with-slug-' . $slug ) ),
-		);
-
-		// Unset install_text, install_desc and install_url if the license is empty.
-		if ( empty( $settings['license']['key'] ) ) {
-			unset( $settings['license']['install_text'] );
-			unset( $settings['license']['install_url'] );
-			unset( $settings['license']['install_desc'] );
-		}
-
-		return $settings;
 	}
 }
