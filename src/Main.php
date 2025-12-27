@@ -74,11 +74,14 @@ class Main {
 	/**
 	 * Get a configuration value.
 	 *
-	 * @param string $key Configuration key.
+	 * @param string $key Configuration key. If empty, returns all config.
 	 * @param mixed  $default Default value if key doesn't exist.
 	 * @return mixed Configuration value.
 	 */
-	public static function get_config( $key, $default = '' ) {
+	public static function get_config( $key = '', $default = '' ) {
+		if ( empty( $key ) ) {
+			return self::$config;
+		}
 		return isset( self::$config[ $key ] ) ? self::$config[ $key ] : $default;
 	}
 

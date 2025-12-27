@@ -164,8 +164,15 @@ class Updater {
 		} else {
 			$response = json_decode( wp_json_encode( $response ), true );
 			
-			foreach ( $plugin_identifiers as $index => $identifier ) {
-				$slug = $payload[ $index ];
+			// Map plugin identifiers back to slugs
+			$identifier_to_slug = array_combine( $plugin_identifiers, $payload );
+			
+			foreach ( $plugin_identifiers as $identifier ) {
+				$slug = isset( $identifier_to_slug[ $identifier ] ) ? $identifier_to_slug[ $identifier ] : '';
+				
+				if ( empty( $slug ) ) {
+					continue;
+				}
 				
 				if ( ! empty( $response[ $identifier ]['error'] ) ) {
 					$data['errors'][] = $response[ $identifier ]['error'];
@@ -408,7 +415,7 @@ class Updater {
 				sprintf(
 					/* translators: %s: updates page URL. */
 					wp_kses_post( __( 'To update, please <a href="%s">activate your license key</a>.', Main::get_config( 'text_domain' ) ) ),
-					esc_url( admin_url( 'admin.php?page=' . $manage_license_page ) )
+					esc_url( admin_url( 'admin.php?page=' . sanitize_key( $manage_license_page ) ) )
 				)
 			);
 		}
@@ -433,7 +440,7 @@ class Updater {
 			$notice = sprintf(
 				/* translators: %s: updates page URL. */
 				__( 'To update, please <a href="%s">activate your license key</a>.', Main::get_config( 'text_domain' ) ),
-				admin_url( 'admin.php?page=' . $manage_license_page )
+				admin_url( 'admin.php?page=' . sanitize_key( $manage_license_page ) )
 			);
 
 			foreach ( array_keys( Main::get_installed_addons() ) as $key ) {
