@@ -11,23 +11,29 @@ defined( 'ABSPATH' ) || exit;
 /**
  * Updater Class
  *
- * Contains the logic to fetch available updates and hook into Core's update
- * routines to serve updates for noptin.com-provided packages.
- *
  * @since 1.5.0
  * @ignore
  */
 class Updater {
 
 	/**
-	 * Loads the class, runs on init.
+	 * @var Main The main instance.
 	 */
-	public static function load() {
-		add_action( 'pre_set_site_transient_update_plugins', array( __CLASS__, 'transient_update_plugins' ), 21, 1 );
-		add_action( 'upgrader_process_complete', array( __CLASS__, 'upgrader_process_complete' ) );
-		add_filter( 'plugins_api', array( __CLASS__, 'plugins_api' ), 20, 3 );
-		add_action( 'plugins_loaded', array( __CLASS__, 'add_notice_unlicensed_product' ), 10, 4 );
-		add_filter( 'site_transient_update_plugins', array( __CLASS__, 'change_update_information' ) );
+	private $main;
+
+	/**
+	 * Loads the class, runs on init.
+	 *
+	 * @param Main $main The main instance.
+	 */
+	public function __construct( $main ) {
+		$this->main = $main;
+
+		add_action( 'pre_set_site_transient_update_plugins', array( $this, 'transient_update_plugins' ), 21, 1 );
+		add_action( 'upgrader_process_complete', array( $this, 'upgrader_process_complete' ) );
+		add_filter( 'plugins_api', array( $this, 'plugins_api' ), 20, 3 );
+		add_action( 'plugins_loaded', array( $this, 'add_notice_unlicensed_product' ), 10, 4 );
+		add_filter( 'site_transient_update_plugins', array( $this, 'change_update_information' ) );
 	}
 
 	/**
@@ -38,29 +44,29 @@ class Updater {
 	 *
 	 * @return object The same or a modified version of the transient.
 	 */
-	public static function transient_update_plugins( $transient ) {
-		$update_data = self::get_update_data();
-		$product_url = Main::get_config( 'product_url', '' );
-		$prefix      = Main::get_config( 'plugin_prefix', '' );
+	public function transient_update_plugins( $transient ) {
+		$update_data = $this->get_update_data();
 
-		foreach ( Main::get_installed_addons() as $plugin ) {
+		foreach ( $this->main->get_installed_addons() as $plugin ) {
 
-			// Skip if the plugin doesn't have update data.
-			if ( empty( $update_data[ $plugin['slug'] ] ) || empty( $update_data[ $plugin['slug'] ]['version'] ) ) {
+			$data = $update_data[ $plugin['github_repo'] ] ?? array();
+
+			// Skip if the plugin is not ours
+			if ( empty( $data['version'] ) ) {
 				continue;
 			}
 
-			$data     = $update_data[ $plugin['slug'] ];
 			$filename = $plugin['_filename'];
 
 			$item = array(
-				'id'             => sanitize_key( $prefix . '-' . $plugin['slug'] ),
+				'id'             => $this->main->prefix . '-com-' . $plugin['slug'],
 				'slug'           => $plugin['slug'],
 				'plugin'         => $filename,
 				'new_version'    => $data['version'],
-				'url'            => $product_url,
+				'url'            => $this->main->api_url,
 				'package'        => empty( $data['download_link'] ) ? '' : $data['download_link'],
-				'requires_php'   => empty( $data['requires_php'] ) ? '5.6' : $data['requires_php'],
+				'requires_php'   => empty( $data['requires_php'] ) ? '7.0' : $data['requires_php'],
+				'tested'         => wp_get_wp_version(),
 				'upgrade_notice' => '',
 			);
 
@@ -84,9 +90,14 @@ class Updater {
 	 *
 	 * @return array Update data {slug => data}
 	 */
-	public static function get_update_data() {
-		$payload = wp_list_pluck( Main::get_installed_addons(), 'slug' );
-		return self::update_check( array_filter( array_unique( array_values( $payload ) ) ) );
+	public function get_update_data() {
+		return $this->update_check(
+			array_filter(
+				array_unique(
+					array_values( wp_list_pluck( $this->main->get_installed_addons(), 'github_repo' ) )
+				)
+			)
+		);
 	}
 
 	/**
@@ -98,26 +109,20 @@ class Updater {
 	 * @param array $payload Information about the plugin to update.
 	 * @return array Update data for each requested product.
 	 */
-	private static function update_check( $payload ) {
+	private function update_check( $payload ) {
 
 		// Abort if no downloads installed.
 		if ( empty( $payload ) || ! is_array( $payload ) ) {
 			return array();
 		}
 
-		$versions_api_url = Main::get_config( 'versions_api_url' );
-		if ( empty( $versions_api_url ) ) {
-			return array();
-		}
-
 		sort( $payload );
 
-		$option_prefix = Main::get_config( 'option_name', 'wp_plugin_updates_data' );
-		$hash          = md5( wp_json_encode( $payload ) . Main::get_active_license_key() );
-		$cache_key     = sanitize_key( '_' . $option_prefix . '_update_check' );
-		$data          = get_transient( $cache_key );
-		
-		if ( false !== $data && ! empty( $data['hash'] ) && hash_equals( $hash, $data['hash'] ) ) {
+		$license_key = $this->main->get_active_license_key();
+		$hash        = md5( wp_json_encode( $payload ) . $license_key );
+		$cache_key   = $this->main->prefix . '_update_check';
+		$data        = get_transient( $cache_key );
+		if ( false !== $data && hash_equals( $hash, $data['hash'] ) ) {
 			return $data['downloads'];
 		}
 
@@ -128,72 +133,53 @@ class Updater {
 			'errors'    => array(),
 		);
 
-		// Allow filtering of plugin identifiers before making API request
-		// The filter receives the slugs and should return the same number of identifiers in the same order
-		$plugin_identifiers = apply_filters( 'wp_plugin_updates_identifiers', $payload, Main::get_config( 'plugin_prefix', '' ) );
-
-		// Ensure the arrays have the same count
-		if ( count( $plugin_identifiers ) !== count( $payload ) ) {
-			$plugin_identifiers = $payload;
-		}
-
-		$license_key = Main::get_active_license_key();
-		$endpoint    = add_query_arg(
-			array(
-				'hizzle_license_url' => empty( $license_key ) ? false : rawurlencode( home_url() ),
-				'hizzle_license'     => empty( $license_key ) ? false : rawurlencode( $license_key ),
-				'downloads'          => rawurlencode( implode( ',', $plugin_identifiers ) ),
-				'hash'               => $hash,
-			),
-			$versions_api_url
-		);
-
-		$headers = array_merge(
-			array(
-				'Accept' => 'application/json',
-			),
-			Main::get_config( 'api_headers', array() )
-		);
-
-		$response = Main::process_api_response(
-			wp_remote_get(
-				$endpoint,
-				array(
-					'timeout' => 15,
-					'headers' => $headers,
-				)
-			)
-		);
+		$response = $this->fetch_versions( $payload );
 
 		if ( is_wp_error( $response ) ) {
 			$data['errors'][] = $response->get_error_message();
 		} else {
 			$response = json_decode( wp_json_encode( $response ), true );
-			
-			// Map plugin identifiers back to slugs - both arrays should have same count
-			foreach ( $payload as $index => $slug ) {
-				$identifier = isset( $plugin_identifiers[ $index ] ) ? $plugin_identifiers[ $index ] : '';
-				
-				if ( empty( $identifier ) || empty( $slug ) ) {
-					continue;
-				}
-				
-				if ( ! empty( $response[ $identifier ]['error'] ) ) {
-					$data['errors'][] = $response[ $identifier ]['error'];
+			foreach ( $payload as $git_url ) {
+				if ( ! empty( $response[ $git_url ]['error'] ) ) {
+					$data['errors'][] = $response[ $git_url ]['error'];
 					continue;
 				}
 
-				if ( ! empty( $response[ $identifier ] ) ) {
-					$data['downloads'][ $slug ]         = $response[ $identifier ];
-					$data['downloads'][ $slug ]['slug'] = $slug;
-				}
+				$data['downloads'][ $git_url ] = $response[ $git_url ];
 			}
 		}
 
-		delete_transient( '_' . $option_prefix . '_helper_updates_count' );
-		$seconds = empty( $data['errors'] ) ? DAY_IN_SECONDS : 30 * MINUTE_IN_SECONDS;
+		delete_transient( $this->main->prefix . '_helper_updates_count' );
+		$seconds = ! is_wp_error( $response ) ? DAY_IN_SECONDS : 30 * MINUTE_IN_SECONDS;
 		set_transient( $cache_key, $data, $seconds );
 		return $data['downloads'];
+	}
+
+	private function fetch_versions( $git_urls ) {
+
+		// Abort if no downloads installed.
+		if ( empty( $git_urls ) || ! is_array( $git_urls ) ) {
+			return array();
+		}
+
+		return Main::process_api_response(
+			wp_remote_get(
+				add_query_arg(
+					array(
+						'hizzle_license_url' => rawurlencode( home_url() ),
+						'hizzle_license'     => empty( $license_key ) ? false : rawurlencode( $license_key ),
+						'downloads'          => rawurlencode( implode( ',', $git_urls ) ),
+					),
+					$this->main->api_url . '/wp-json/hizzle_download/v1/versions'
+				),
+				array(
+					'timeout' => 15,
+					'headers' => array(
+						'Accept' => 'application/json',
+					),
+				)
+			)
+		);
 	}
 
 	/**
@@ -201,21 +187,19 @@ class Updater {
 	 *
 	 * @return int The number of products with updates.
 	 */
-	public static function get_updates_count() {
-		$option_prefix = Main::get_config( 'option_name', 'wp_plugin_updates_data' );
-		$cache_key     = sanitize_key( '_' . $option_prefix . '_helper_updates_count' );
-		$count         = get_transient( $cache_key );
-		
+	public function get_updates_count() {
+		$cache_key = $this->main->prefix . '_helper_updates_count';
+		$count     = get_transient( $cache_key );
 		if ( false !== $count ) {
 			return $count;
 		}
 
-		if ( ! get_transient( '_' . $option_prefix . '_update_check' ) ) {
+		if ( ! get_transient( $this->main->prefix . '_update_check' ) ) {
 			return 0;
 		}
 
 		$count       = 0;
-		$update_data = self::get_update_data();
+		$update_data = $this->get_update_data();
 
 		if ( empty( $update_data ) ) {
 			set_transient( $cache_key, $count, 12 * HOUR_IN_SECONDS );
@@ -223,12 +207,12 @@ class Updater {
 		}
 
 		// Scan local plugins.
-		foreach ( Main::get_installed_addons() as $plugin ) {
-			if ( empty( $update_data[ $plugin['slug'] ] ) ) {
+		foreach ( $this->main->get_installed_addons() as $plugin ) {
+			if ( empty( $update_data[ $plugin['github_repo'] ] ) ) {
 				continue;
 			}
 
-			if ( version_compare( $plugin['Version'], $update_data[ $plugin['slug'] ]['version'], '<' ) ) {
+			if ( version_compare( $plugin['Version'], $update_data[ $plugin['github_repo'] ]['version'], '<' ) ) {
 				++$count;
 			}
 		}
@@ -240,10 +224,10 @@ class Updater {
 	/**
 	 * Return the updates count markup.
 	 *
-	 * @return string Updates count markup, empty string if no updates avairable.
+	 * @return string Updates count markup, empty string if no updates available.
 	 */
-	public static function get_updates_count_html() {
-		$count = (int) self::get_updates_count();
+	public function get_updates_count_html() {
+		$count = (int) $this->get_updates_count();
 		if ( ! $count ) {
 			return '';
 		}
@@ -258,45 +242,41 @@ class Updater {
 	 * @param string $slug The extension slug.
 	 * @return bool
 	 */
-	public static function has_extension_update( $slug ) {
-		$option_prefix = Main::get_config( 'option_name', 'wp_plugin_updates_data' );
+	public function has_extension_update( $slug ) {
 
-		if ( ! get_transient( '_' . $option_prefix . '_update_check' ) ) {
+		if ( ! get_transient( $this->main->prefix . '_update_check' ) ) {
 			return false;
 		}
 
-		$update_data = self::get_update_data();
-
-		if ( empty( $update_data ) || empty( $update_data[ $slug ] ) ) {
+		$update_data = $this->get_update_data();
+		if ( empty( $update_data ) ) {
 			return false;
 		}
 
 		// Fetch local plugin.
-		$local_plugin = current( wp_list_filter( Main::get_installed_addons(), array( 'slug' => $slug ) ) );
+		$local_plugin = current( wp_list_filter( $this->main->get_installed_addons(), array( 'slug' => $slug ) ) );
 
-		return ! empty( $local_plugin ) && version_compare( $local_plugin['Version'], $update_data[ $slug ]['version'], '<' );
+		return ! empty( $local_plugin ) && isset( $update_data[ $local_plugin['github_repo'] ] ) && version_compare( $local_plugin['Version'], $update_data[ $local_plugin['github_repo'] ]['version'], '<' );
 	}
 
 	/**
 	 * Flushes cached update data.
 	 */
-	public static function flush_updates_cache() {
-		$option_prefix = Main::get_config( 'option_name', 'wp_plugin_updates_data' );
-		delete_transient( '_' . $option_prefix . '_update_check' );
-		delete_transient( '_' . $option_prefix . '_helper_updates_count' );
+	public function flush_updates_cache() {
+		delete_transient( $this->main->prefix . '_update_check' );
+		delete_transient( $this->main->prefix . '_helper_updates_count' );
 		delete_site_transient( 'update_plugins' );
 	}
 
 	/**
 	 * Fires when a user successfully updated a plugin.
 	 */
-	public static function upgrader_process_complete() {
-		$option_prefix = Main::get_config( 'option_name', 'wp_plugin_updates_data' );
-		delete_transient( '_' . $option_prefix . '_helper_updates_count' );
+	public function upgrader_process_complete() {
+		delete_transient( $this->main->prefix . '_helper_updates_count' );
 	}
 
 	/**
-	 * Plugin information callback for extensions.
+	 * Plugin information callback for our extensions.
 	 *
 	 * @param object $response The response core needs to display the modal.
 	 * @param string $action The requested plugins_api() action.
@@ -304,88 +284,42 @@ class Updater {
 	 *
 	 * @return object An updated $response.
 	 */
-	public static function plugins_api( $response, $action, $args ) {
+	public function plugins_api( $response, $action, $args ) {
 		if ( 'plugin_information' !== $action || empty( $args->slug ) ) {
 			return $response;
 		}
 
-		$prefix = Main::get_config( 'plugin_prefix', '' );
+		// Fetch local plugin.
+		$local_plugin = current( wp_list_filter( $this->main->get_installed_addons(), array( 'slug' => $args->slug ) ) );
+		$git_url      = $local_plugin ? $local_plugin['github_repo'] : '';
 
-		// Only for slugs that match our prefix
-		if ( ! empty( $prefix ) && 0 !== strpos( $args->slug, $prefix ) ) {
+		// Abort if cannot get git url.
+		if ( empty( $git_url ) ) {
 			return $response;
 		}
 
-		$versions_api_url = Main::get_config( 'versions_api_url' );
-		if ( empty( $versions_api_url ) ) {
-			return $response;
-		}
-
-		// Allow filtering to get the plugin identifier for the API
-		$plugin_identifier = apply_filters( 'wp_plugin_updates_plugin_identifier', $args->slug, $prefix );
-
-		// Abort if cannot get plugin identifier.
-		if ( empty( $plugin_identifier ) ) {
-			return $response;
-		}
-
-		$license_key = Main::get_active_license_key();
-		$endpoint    = add_query_arg(
-			array(
-				'hizzle_license_url' => empty( $license_key ) ? false : rawurlencode( home_url() ),
-				'hizzle_license'     => empty( $license_key ) ? false : rawurlencode( $license_key ),
-				'downloads'          => rawurlencode( $plugin_identifier ),
-			),
-			$versions_api_url
-		);
-
-		$option_prefix = Main::get_config( 'option_name', 'wp_plugin_updates_data' );
-		$key           = sanitize_key( $option_prefix . '_versions_' . md5( $endpoint ) );
-		$new_response  = get_transient( $key );
-
-		if ( false === $new_response ) {
-			$headers = array_merge(
-				array(
-					'Accept' => 'application/json',
-				),
-				Main::get_config( 'api_headers', array() )
-			);
-
-			$new_response = Main::process_api_response(
-				wp_remote_get(
-					$endpoint,
-					array(
-						'timeout' => 15,
-						'headers' => $headers,
-					)
-				)
-			);
-
-			if ( ! is_wp_error( $new_response ) ) {
-				set_transient( $key, $new_response, 5 * MINUTE_IN_SECONDS );
-			}
-		}
+		$new_response = $this->fetch_versions( array( $git_url ) );
 
 		if ( is_wp_error( $new_response ) ) {
 			return new \WP_Error( 'plugins_api_failed', $new_response->get_error_message() );
 		}
 
 		$new_response = json_decode( wp_json_encode( $new_response ), true );
-		if ( empty( $new_response[ $plugin_identifier ] ) ) {
-			return new \WP_Error( 'plugins_api_failed', __( 'Error fetching downloadable file', Main::get_config( 'text_domain' ) ) );
+		if ( empty( $new_response[ $git_url ] ) ) {
+			return new \WP_Error( 'plugins_api_failed', 'Error fetching downloadable file' );
 		}
 
-		if ( ! empty( $new_response[ $plugin_identifier ]['error'] ) ) {
-			if ( ! empty( $new_response[ $plugin_identifier ]['error']['error_code'] ) && 'download_file_not_found' === $new_response[ $plugin_identifier ]['error']['error_code'] ) {
+		if ( ! empty( $new_response[ $git_url ]['error'] ) ) {
+			if ( ! empty( $new_response[ $git_url ]['error']['error_code'] ) && 'download_file_not_found' === $new_response[ $git_url ]['error']['error_code'] ) {
 				return $response;
 			}
 
-			return new \WP_Error( 'plugins_api_failed', $new_response[ $plugin_identifier ]['error'] );
+			return new \WP_Error( 'plugins_api_failed', $new_response[ $git_url ]['error'] );
 		}
 
-		$new_response[ $plugin_identifier ]['slug'] = $args->slug;
+		$new_response[ $git_url ]['slug'] = $args->slug;
 
-		return (object) $new_response[ $plugin_identifier ];
+		return (object) $new_response[ $git_url ];
 	}
 
 	/**
@@ -395,10 +329,10 @@ class Updater {
 	 * @since   1.0.0
 	 * @return  void
 	 */
-	public static function add_notice_unlicensed_product() {
-		if ( is_admin() && function_exists( 'get_plugins' ) ) {
-			foreach ( array_keys( Main::get_installed_addons() ) as $key ) {
-				add_action( 'in_plugin_update_message-' . $key, array( __CLASS__, 'need_license_message' ), 10, 2 );
+	public function add_notice_unlicensed_product() {
+		if ( is_admin() && function_exists( 'get_plugins' ) && ! empty( $this->main->manage_license_page ) ) {
+			foreach ( array_keys( $this->main->get_installed_addons() ) as $key ) {
+				add_action( 'in_plugin_update_message-' . $key, array( $this, 'need_license_message' ), 10, 2 );
 			}
 		}
 	}
@@ -410,44 +344,36 @@ class Updater {
 	 * @param  object $r The api response.
 	 * @return void
 	 */
-	public static function need_license_message( $plugin_data, $r ) {
-		$manage_license_page = Main::get_config( 'manage_license_page', '' );
+	public function need_license_message( $plugin_data, $r ) {
 
-		if ( empty( $r->package ) && ! empty( $manage_license_page ) ) {
+		if ( empty( $r->package ) ) {
 			printf(
 				'<span style="display: block;margin-top: 10px;font-weight: 600; color: #a00;">%s</span>',
 				sprintf(
-					/* translators: %s: updates page URL. */
-					wp_kses_post( __( 'To update, please <a href="%s">activate your license key</a>.', Main::get_config( 'text_domain' ) ) ),
-					esc_url( admin_url( 'admin.php?page=' . sanitize_key( $manage_license_page ) ) )
+					'To update, please <a href="%s">activate your license key</a>.',
+					esc_url( $this->main->manage_license_page )
 				)
 			);
 		}
 	}
 
 	/**
-	 * Change the update information for unlicensed products
+	 * Change the update information for unlicensed plugins.
 	 *
 	 * @param  object $transient The update-plugins transient.
 	 * @return object
 	 */
-	public static function change_update_information( $transient ) {
-		$manage_license_page = Main::get_config( 'manage_license_page', '' );
-
-		if ( empty( $manage_license_page ) ) {
-			return $transient;
-		}
+	public function change_update_information( $transient ) {
 
 		// If we are on the update core page, change the update message for unlicensed products.
 		global $pagenow;
-		if ( ( 'update-core.php' === $pagenow ) && $transient && isset( $transient->response ) && ! isset( $_GET['action'] ) ) {
+		if ( ! empty( $this->main->manage_license_page ) && ( 'update-core.php' === $pagenow ) && $transient && isset( $transient->response ) && ! isset( $_GET['action'] ) ) {
 			$notice = sprintf(
-				/* translators: %s: updates page URL. */
-				__( 'To update, please <a href="%s">activate your license key</a>.', Main::get_config( 'text_domain' ) ),
-				admin_url( 'admin.php?page=' . sanitize_key( $manage_license_page ) )
+				'To update, please <a href="%s">activate your license key</a>.',
+				$this->main->manage_license_page
 			);
 
-			foreach ( array_keys( Main::get_installed_addons() ) as $key ) {
+			foreach ( array_keys( $this->main->get_installed_addons() ) as $key ) {
 				if ( isset( $transient->response[ $key ] ) && ( empty( $transient->response[ $key ]->package ) ) ) {
 					$transient->response[ $key ]->upgrade_notice = $notice;
 				}
