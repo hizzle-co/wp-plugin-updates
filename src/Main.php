@@ -16,73 +16,178 @@ defined( 'ABSPATH' ) || exit;
 class Main {
 
 	/**
-	 * Configuration options.
-	 *
-	 * @var array
+	 * @var Main[] Instances, grouped by API URL and plugin file.
 	 */
-	private static $config = array();
+	private static $instances = array();
 
 	/**
-	 * The option name used to store the helper data.
+	 * @var Updater The current updater instance.
+	 */
+	public $updater;
+
+	/**
+	 * @var Helper The helper instance.
+	 */
+	public $helper;
+
+	/**
+	 * Base URL of your licensing server, e.g, https://my-plugin-site.com.
 	 *
 	 * @var string
 	 */
-	private static $option_name = 'wp_plugin_updates_data';
+	public $api_url;
+
+	/**
+	 * The prefix used to store the helper data.
+	 */
+	public $prefix;
+
+	/**
+	 * For plugins that use addons instead of a premium version.
+	 */
+	public $group;
+
+	/**
+	 * @var string Full path to the main plugin file, e.g, my-plugin/my-plugin.php.
+	 */
+	public $plugin_file;
+
+	/**
+	 * @var string GitHub repository of the plugin, e.g, organization/my-plugin.
+	 */
+	public $github_repo;
+
+	/**
+	 * @var string Admin page slug for managing licenses. Defaults to ''.
+	 */
+	public $manage_license_page;
 
 	/**
 	 * Initialize the updater with configuration.
 	 *
-	 * @param array $config Configuration array with the following keys:
-	 *                      - 'api_url' (string) Required. Base URL of your licensing server.
-	 *                      - 'license_api_url' (string) Optional. URL for license API. Defaults to {api_url}/wp-json/hizzle/v1/licenses.
-	 *                      - 'versions_api_url' (string) Optional. URL for versions API. Defaults to {api_url}/wp-json/hizzle_download/v1/versions.
-	 *                      - 'option_name' (string) Optional. WordPress option name to store data. Defaults to 'wp_plugin_updates_data'.
-	 *                      - 'plugin_prefix' (string) Optional. Prefix for your plugins. Defaults to ''.
-	 *                      - 'text_domain' (string) Optional. Text domain for translations. Defaults to 'default'.
-	 *                      - 'api_headers' (array) Optional. Additional headers to send with API requests. Defaults to array().
-	 *                      - 'product_url' (string) Optional. URL to your product/pricing page. Defaults to ''.
-	 *                      - 'manage_license_page' (string) Optional. Admin page slug for managing licenses. Defaults to ''.
+	 * @return Main|null The instance or null on failure.
 	 */
-	public static function init( $config = array() ) {
-		$defaults = array(
-			'api_url'            => '',
-			'license_api_url'    => '',
-			'versions_api_url'   => '',
-			'option_name'        => 'wp_plugin_updates_data',
-			'plugin_prefix'      => '',
-			'text_domain'        => 'default',
-			'api_headers'        => array(),
-			'product_url'        => '',
-			'manage_license_page' => '',
-		);
-
-		self::$config = wp_parse_args( $config, $defaults );
-
-		// Set derived URLs if not provided
-		if ( empty( self::$config['license_api_url'] ) && ! empty( self::$config['api_url'] ) ) {
-			self::$config['license_api_url'] = trailingslashit( self::$config['api_url'] ) . 'wp-json/hizzle/v1/licenses';
+	public static function instance( $instance, $config = array() ) {
+		// Check if we already have an instance.
+		if ( isset( self::$instances[ $instance ] ) ) {
+			return self::$instances[ $instance ];
 		}
 
-		if ( empty( self::$config['versions_api_url'] ) && ! empty( self::$config['api_url'] ) ) {
-			self::$config['versions_api_url'] = trailingslashit( self::$config['api_url'] ) . 'wp-json/hizzle_download/v1/versions';
+		foreach ( array( 'api_url', 'plugin_file', 'github_repo' ) as $required_key ) {
+			if ( empty( $config[ $required_key ] ) ) {
+				_doing_it_wrong( __METHOD__, sprintf( 'Missing required config key: %s', esc_html( $required_key ) ), '1.0.0' );
+				return null;
+			}
 		}
 
-		// Update option name
-		self::$option_name = self::$config['option_name'];
+		self::$instances[ $instance ] = new self( $config );
+
+		return self::$instances[ $instance ];
 	}
 
 	/**
-	 * Get a configuration value.
+	 * Main singleton instance.
 	 *
-	 * @param string $key Configuration key. If empty, returns all config.
-	 * @param mixed  $default Default value if key doesn't exist.
-	 * @return mixed Configuration value.
+	 * @param array $config Configuration array.
 	 */
-	public static function get_config( $key = '', $default = '' ) {
-		if ( empty( $key ) ) {
-			return self::$config;
+	private function __construct( $config ) {
+		$config['api_url'] = untrailingslashit( $config['api_url'] );
+
+		foreach ( $config as $key => $value ) {
+			if ( property_exists( $this, $key ) ) {
+				$this->{$key} = $value;
+			}
 		}
-		return isset( self::$config[ $key ] ) ? self::$config[ $key ] : $default;
+
+		if ( empty( $this->prefix ) ) {
+			if ( ! empty( $this->group ) ) {
+				$this->prefix = $this->group;
+			} else {
+				$this->prefix = str_replace( '.', '_', wp_parse_url( $this->api_url, PHP_URL_HOST ) );
+			}
+		}
+
+		$this->updater = new Updater( $this );
+		$this->helper  = new Helper( $this );
+
+		add_action( 'rest_api_init', array( $this, 'register_rest_routes' ) );
+	}
+
+	/**
+	 * Checks if this is noptin.
+	 */
+	public function is_noptin() {
+		return 'noptin' === $this->prefix;
+	}
+
+	/**
+	 * Checks if this is our plugin.
+	 *
+	 * @param string $plugin_file The plugin file to check.
+	 */
+	public function is_our_plugin( $plugin_file ) {
+
+		if ( $plugin_file === $this->plugin_file ) {
+			return true;
+		}
+
+		return ! empty( $this->group ) && 0 === strpos( $plugin_file, $this->group . '-' );
+	}
+
+	/**
+	 * Register REST API routes.
+	 */
+	public function register_rest_routes() {
+		$namespace = $this->prefix . '/v1';
+		register_rest_route(
+			$namespace,
+			'/license/activate',
+			array(
+				'methods'             => \WP_REST_Server::CREATABLE,
+				'callback'            => array( $this, 'rest_activate_license' ),
+				'permission_callback' => array( $this, 'check_rest_permissions' ),
+				'args'                => array(
+					'license_key' => array(
+						'required'          => true,
+						'type'              => 'string',
+						'sanitize_callback' => 'sanitize_text_field',
+						'description'       => 'The license key to activate.',
+					),
+					'plugin'      => array(
+						'required'          => false,
+						'type'              => 'string',
+						'sanitize_callback' => 'sanitize_text_field',
+						'description'       => 'The plugin slug (for multi-plugin licenses).',
+					),
+				),
+			)
+		);
+
+		register_rest_route(
+			$namespace,
+			'/license/deactivate',
+			array(
+				'methods'             => \WP_REST_Server::DELETABLE,
+				'callback'            => array( $this, 'rest_deactivate_license' ),
+				'permission_callback' => array( $this, 'check_rest_permissions' ),
+				'args'                => array(
+					'plugin' => array(
+						'required'          => false,
+						'type'              => 'string',
+						'sanitize_callback' => 'sanitize_text_field',
+						'description'       => 'The plugin slug (for multi-plugin licenses).',
+					),
+				),
+			)
+		);
+	}
+
+	public function check_rest_permissions() {
+		if ( $this->is_noptin() && function_exists( 'get_noptin_capability' ) ) {
+			return current_user_can( get_noptin_capability() );
+		}
+
+		return current_user_can( 'manage_options' );
 	}
 
 	/**
@@ -95,11 +200,11 @@ class Main {
 	 *
 	 * @return mixed An option or the default.
 	 */
-	public static function get( $key, $default = false ) {
-		$options = get_option( self::$option_name, array() );
+	public function get( $key, $default_value = false ) {
+		$options = get_option( $this->prefix . '_helper_data', array() );
 		$options = is_array( $options ) ? $options : array();
 
-		return array_key_exists( $key, $options ) ? $options[ $key ] : $default;
+		return array_key_exists( $key, $options ) ? $options[ $key ] : $default_value;
 	}
 
 	/**
@@ -113,11 +218,11 @@ class Main {
 	 *
 	 * @return bool True if the option has been updated.
 	 */
-	public static function update( $key, $value ) {
-		$options         = get_option( self::$option_name, array() );
+	public function update( $key, $value ) {
+		$options         = get_option( $this->prefix . '_helper_data', array() );
 		$options         = is_array( $options ) ? $options : array();
 		$options[ $key ] = $value;
-		return update_option( self::$option_name, $options, true );
+		return update_option( $this->prefix . '_helper_data', $options, true );
 	}
 
 	/*
@@ -136,14 +241,15 @@ class Main {
 	 * @return object|WP_Error|string|false
 	 * @since 1.8.0
 	 */
-	public static function get_active_license_key( $include_details = false ) {
+	public function get_active_license_key( $include_details = false, $plugin = '' ) {
 
 		// Fetch the license key.
-		$license_key = self::get( 'license_key' );
+		$option_key  = $this->is_noptin() ? 'license_key' : ( 'license_key_' . $plugin );
+		$license_key = $this->get( $option_key );
 
 		// If not set, try to fetch the old style license keys.
-		if ( empty( $license_key ) ) {
-			$licenses = self::get( 'active_license_keys' );
+		if ( empty( $license_key ) && $this->is_noptin() ) {
+			$licenses = $this->get( 'active_license_keys' );
 
 			if ( is_array( $licenses ) && ! empty( $licenses ) ) {
 				$license_key = array_pop( $licenses );
@@ -158,11 +264,11 @@ class Main {
 			return $license_key;
 		}
 
-		$details = self::fetch_license_details( $license_key );
+		$details = $this->fetch_license_details( $license_key );
 
 		if ( is_wp_error( $details ) ) {
 			if ( in_array( 'hizzle_licenses_not_found', $details->get_error_codes(), true ) ) {
-				self::update( 'license_key', '' );
+				$this->update( $option_key, '' );
 			}
 
 			return $details;
@@ -174,7 +280,7 @@ class Main {
 
 		// Check if it was deactivated remotely.
 		if ( empty( $details->is_active_on_site ) ) {
-			self::update( 'license_key', '' );
+			$this->update( $option_key, '' );
 			return false;
 		}
 
@@ -188,9 +294,9 @@ class Main {
 	 * @return object|WP_Error
 	 * @since 1.7.0
 	 */
-	private static function fetch_license_details( $license_key ) {
+	private function fetch_license_details( $license_key ) {
 		$license_key = sanitize_text_field( $license_key );
-		$cache_key   = sanitize_key( self::get_config( 'option_name', 'wp_plugin_updates_data' ) . '_license_' . $license_key );
+		$cache_key   = sanitize_key( 'noptin_license_' . $license_key );
 		$cached      = get_transient( $cache_key );
 
 		// Abort early if details were cached.
@@ -198,25 +304,16 @@ class Main {
 			return $cached;
 		}
 
-		$license_api_url = self::get_config( 'license_api_url' );
-		if ( empty( $license_api_url ) ) {
-			return new \WP_Error( 'missing_config', __( 'License API URL is not configured.', self::get_config( 'text_domain' ) ) );
-		}
-
-		$headers = array_merge(
-			array(
-				'Accept' => 'application/json',
-			),
-			self::get_config( 'api_headers', array() )
-		);
-
 		// Fetch details remotely.
 		$license = self::process_api_response(
 			wp_remote_get(
-				trailingslashit( $license_api_url ) . $license_key . '/?website=' . rawurlencode( home_url() ),
+				"$this->api_url/wp-json/hizzle/v1/licenses/$license_key/?website=" . rawurlencode( home_url() ),
 				array(
 					'timeout' => 15,
-					'headers' => $headers,
+					'headers' => array(
+						'Accept'           => 'application/json',
+						'X-Requested-With' => 'WPPluginUpdates',
+					),
 				)
 			)
 		);
@@ -226,7 +323,7 @@ class Main {
 		}
 
 		if ( empty( $license ) || empty( $license->license ) ) {
-			return new \WP_Error( 'invalid_license', __( 'Error fetching your license key.', self::get_config( 'text_domain' ) ) );
+			return new \WP_Error( 'invalid_license', 'Error fetching your license key.' );
 		}
 
 		$license = $license->license;
@@ -252,7 +349,7 @@ class Main {
 		$res = json_decode( wp_remote_retrieve_body( $response ) );
 
 		if ( empty( $res ) ) {
-			return new \WP_Error( 'invalid_response', __( 'Invalid response from the server.', self::get_config( 'text_domain' ) ) );
+			return new \WP_Error( 'invalid_response', 'Invalid response from the server.' );
 		}
 
 		if ( isset( $res->code ) && isset( $res->message ) ) {
@@ -267,27 +364,26 @@ class Main {
 	 *
 	 * @return array
 	 */
-	public static function get_installed_addons() {
+	public function get_installed_addons() {
 
 		if ( ! function_exists( 'get_plugins' ) ) {
 			require_once ABSPATH . 'wp-admin/includes/plugin.php';
 		}
 
-		$prefix  = self::get_config( 'plugin_prefix', '' );
-		$plugins = array();
+		$our_plugins = array();
 
 		foreach ( get_plugins() as $filename => $data ) {
 			$slug = basename( dirname( $filename ) );
 
-			// If no prefix is set, include all plugins
-			if ( empty( $prefix ) || 0 === strpos( $slug, $prefix ) ) {
-				$data['_filename']       = $filename;
-				$data['slug']            = $slug;
-				$data['_type']           = 'plugin';
-				$plugins[ $filename ]    = $data;
+			if ( $this->is_our_plugin( $filename ) ) {
+				$data['_filename']        = $filename;
+				$data['slug']             = $slug;
+				$data['_type']            = 'plugin';
+				$data['github_repo']      = $filename === $this->plugin_file ? $this->github_repo : 'hizzle-co/' . $slug;
+				$our_plugins[ $filename ] = $data;
 			}
 		}
 
-		return $plugins;
+		return $our_plugins;
 	}
 }
