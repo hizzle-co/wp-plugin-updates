@@ -16,9 +16,19 @@ defined( 'ABSPATH' ) || exit;
 class Main {
 
 	/**
-	 * @var Main[] Instances, grouped by API URL and plugin file.
+	 * @var Main[] Instances, grouped by host_name.
 	 */
 	private static $instances = array();
+
+	/**
+	 * @var string $host_name
+	 */
+	public $host_name;
+
+	/**
+	 * @var array $plugins $plugin_file => $git_url
+	 */
+	public $plugins;
 
 	/**
 	 * @var Updater The current updater instance.
@@ -65,12 +75,13 @@ class Main {
 	/**
 	 * Initialize the updater with configuration.
 	 *
+	 * @param string $host_name The hostname, e.g, my.noptin.com
 	 * @return Main|null The instance or null on failure.
 	 */
-	public static function instance( $instance, $config = array() ) {
+	public static function instance( $host_name, $config = array() ) {
 		// Check if we already have an instance.
-		if ( isset( self::$instances[ $instance ] ) ) {
-			return self::$instances[ $instance ];
+		if ( isset( self::$instances[ $host_name ] ) ) {
+			return self::$instances[ $host_name ];
 		}
 
 		foreach ( array( 'api_url', 'plugin_file', 'github_repo' ) as $required_key ) {
@@ -80,9 +91,10 @@ class Main {
 			}
 		}
 
-		self::$instances[ $instance ] = new self( $config );
+		$config['host_name']           = $host_name;
+		self::$instances[ $host_name ] = new self( $config );
 
-		return self::$instances[ $instance ];
+		return self::$instances[ $host_name ];
 	}
 
 	/**
@@ -111,6 +123,8 @@ class Main {
 		$this->helper  = new Helper( $this );
 
 		add_action( 'rest_api_init', array( $this, 'register_rest_routes' ) );
+		add_filter( "update_plugins_{$this->host_name}", array( $this, 'filter_update_plugins' ), 10, 4 );
+		add_filter( 'plugins_api', array( $this, 'plugins_api' ), 20, 3 );
 	}
 
 	/**
@@ -385,5 +399,266 @@ class Main {
 		}
 
 		return $our_plugins;
+	}
+
+	/**
+	 * Plugin information callback for our plugins.
+	 *
+	 * @param object $response The response core needs to display the modal.
+	 * @param string $action The requested plugins_api() action.
+	 * @param object $args Arguments passed to plugins_api().
+	 *
+	 * @return object An updated $response.
+	 */
+	public static function plugins_api( $response, $action, $args ) {
+		if ( 'plugin_information' !== $action || empty( $args->slug ) ) {
+			return $response;
+		}
+
+		// Only for slugs that start with noptin-
+		if ( 0 !== strpos( $args->slug, 'noptin-' ) ) {
+			return $response;
+		}
+
+		// Get download slug.
+		$download_slug = str_replace( 'noptin-plugin-with-slug-', '', sanitize_key( $args->slug ) );
+		$git_url       = 'hizzle-co/' . $download_slug;
+
+		// Abort if cannot get download slug.
+		if ( empty( $download_slug ) ) {
+			return $response;
+		}
+
+		$endpoint = add_query_arg(
+			array(
+				'hizzle_license_url' => rawurlencode( home_url() ),
+				'hizzle_license'     => rawurlencode( Noptin_COM::get_active_license_key() ),
+				'downloads'          => rawurlencode( $git_url ),
+			),
+			'https://my.noptin.com/wp-json/hizzle_download/v1/versions'
+		);
+
+		$key          = 'noptin_versions_' . md5( $endpoint );
+		$new_response = get_transient( $key );
+
+		if ( false === $new_response ) {
+			$new_response = Noptin_COM::process_api_response(
+				wp_remote_get(
+					$endpoint,
+					array(
+						'timeout' => 15,
+						'headers' => array(
+							'Accept'           => 'application/json',
+							'X-Requested-With' => 'Noptin',
+						),
+					)
+				)
+			);
+
+			if ( ! is_wp_error( $new_response ) ) {
+				set_transient( $key, $new_response, 5 * MINUTE_IN_SECONDS );
+			}
+		}
+
+		if ( is_wp_error( $new_response ) ) {
+			return new WP_Error( 'plugins_api_failed', $new_response->get_error_message() );
+		}
+
+		$new_response = json_decode( wp_json_encode( $new_response ), true );
+		if ( empty( $new_response[ $git_url ] ) ) {
+			return new WP_Error( 'plugins_api_failed', __( 'Error fetching downloadable file', 'newsletter-optin-box' ) );
+		}
+
+		if ( ! empty( $new_response[ $git_url ]['error'] ) ) {
+			if ( ! empty( $new_response[ $git_url ]['error']['error_code'] ) && 'download_file_not_found' === $new_response[ $git_url ]['error']['error_code'] ) {
+				return $response;
+			}
+
+			return new WP_Error( 'plugins_api_failed', $new_response[ $git_url ]['error'] );
+		}
+
+		$new_response[ $git_url ]['slug'] = $args->slug;
+
+		return (object) $new_response[ $git_url ];
+	}
+
+	/**
+	 * Add action for queued plugins to display message for unlicensed plugins.
+	 *
+	 * @access  public
+	 * @since   1.0.0
+	 * @return  void
+	 */
+	public function add_notice_unlicensed_product() {
+		if ( is_admin() && function_exists( 'get_plugins' ) ) {
+			foreach ( array_keys( $this->get_installed_addons() ) as $key ) {
+				add_action( 'in_plugin_update_message-' . $key, array( $this, 'need_license_message' ), 10, 2 );
+			}
+		}
+	}
+
+	/**
+	 * Message displayed if license not activated
+	 *
+	 * @param  array  $plugin_data The plugin data.
+	 * @param  object $r The api response.
+	 * @return void
+	 */
+	public function need_license_message( $plugin_data, $r ) {
+
+		if ( empty( $r->package ) ) {
+			printf(
+				'<span style="display: block;margin-top: 10px;font-weight: 600; color: #a00;">%s</span>',
+				sprintf(
+					wp_kses_post( 'To update, please <a href="%s">activate your license key</a>.' ),
+					esc_url( $this->get_license_admin_url() )
+				)
+			);
+		}
+	}
+
+	/**
+	 * Adds a plugin.
+	 *
+	 * @param string $plugin_path The full path to the plugin file.
+	 * @param string $repo
+	 */
+	public function add( $plugin_path, $repo ) {
+		$this->plugins[ plugin_basename( $plugin_path ) ] = array(
+			'repo' => $repo,
+			'slug' => dirname( plugin_basename( $plugin_path ) ),
+			'file' => $plugin_path,
+		);
+	}
+
+	/**
+	 * Get plugin by prop
+	 *
+	 * @param string $value
+	 * @param string $property
+	 */
+	public function get_plugin_by_prop( $value, $property = 'plugin' ) {
+		if ( 'plugin' === $property ) {
+			return $this->plugins[ $value ] ?? null;
+		}
+
+		foreach ( $this->plugins as $plugin ) {
+			if ( isset( $plugin[ $property ] ) && $plugin[ $property ] === $value ) {
+				return $plugin;
+			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * Change the update information for unlicensed plugins.
+	 *
+	 * @param  object $transient The update-plugins transient.
+	 * @return object
+	 */
+	public function change_update_information( $transient ) {
+
+		// If we are on the update core page, change the update message for unlicensed products.
+		global $pagenow;
+		if ( ( 'update-core.php' === $pagenow ) && $transient && isset( $transient->response ) && ! isset( $_GET['action'] ) ) {
+			$notice = sprintf(
+				'To update, please <a href="%s">activate your license key</a>.',
+				$this->get_license_admin_url()
+			);
+
+			foreach ( array_keys( $this->get_installed_addons() ) as $key ) {
+				if ( isset( $transient->response[ $key ] ) && ( empty( $transient->response[ $key ]->package ) ) ) {
+					$transient->response[ $key ]->upgrade_notice = $notice;
+				}
+			}
+		}
+
+		return $transient;
+	}
+
+	/**
+	 * Filters the update response for a given plugin hostname.
+	 *
+	 * The dynamic portion of the hook name, `$hostname`, refers to the hostname
+	 * of the URI specified in the `Update URI` header field.
+	 *
+	 * @since 5.8.0
+	 *
+	 * @param array|false $update {
+	 *     The plugin update data with the latest details. Default false.
+	 *
+	 *     @type string   $id           Optional. ID of the plugin for update purposes, should be a URI
+	 *                                  specified in the `Update URI` header field.
+	 *     @type string   $slug         Slug of the plugin.
+	 *     @type string   $version      The version of the plugin.
+	 *     @type string   $url          The URL for details of the plugin.
+	 *     @type string   $package      Optional. The update ZIP for the plugin.
+	 *     @type string   $tested       Optional. The version of WordPress the plugin is tested against.
+	 *     @type string   $requires_php Optional. The version of PHP which the plugin requires.
+	 *     @type bool     $autoupdate   Optional. Whether the plugin should automatically update.
+	 *     @type string[] $icons        Optional. Array of plugin icons.
+	 *     @type string[] $banners      Optional. Array of plugin banners.
+	 *     @type string[] $banners_rtl  Optional. Array of plugin RTL banners.
+	 *     @type array    $translations {
+	 *         Optional. List of translation updates for the plugin.
+	 *
+	 *         @type string $language   The language the translation update is for.
+	 *         @type string $version    The version of the plugin this translation is for.
+	 *                                  This is not the version of the language file.
+	 *         @type string $updated    The update timestamp of the translation file.
+	 *                                  Should be a date in the `YYYY-MM-DD HH:MM:SS` format.
+	 *         @type string $package    The ZIP location containing the translation update.
+	 *         @type string $autoupdate Whether the translation should be automatically installed.
+	 *     }
+	 * }
+	 * @param array       $plugin_data      Plugin headers.
+	 * @param string      $plugin_file      Plugin filename.
+	 * @param string[]    $locales          Installed locales to look up translations for.
+	 */
+	public function filter_update_plugins( $update, $plugin_data, $plugin_file, $locales ) {
+
+		if ( is_array( $update ) || isset( $this->plugins[ $plugin_file ] ) ) {
+			return $update;
+		}
+
+		// Prepare update URL.
+		$url = add_query_arg(
+			array(
+				'hizzle_license_url' => rawurlencode( home_url() ),
+				'hizzle_license'     => rawurlencode( $this->get_active_license_key( false, $plugin_file ) ),
+				'downloads'          => rawurlencode( $this->plugins[ $plugin_file ]['repo'] ),
+				'locales'            => rawurlencode( implode( ',', $locales ) ),
+			),
+			"https://{$this->host_name}/wp-json/hizzle_download/v1/versions"
+		);
+
+		$response = self::process_api_response(
+			wp_remote_get(
+				$url,
+				array(
+					'timeout' => 15,
+					'headers' => array(
+						'Accept' => 'application/json',
+					),
+				)
+			)
+		);
+
+		if ( is_wp_error( $response ) ) {
+			wp_trigger_error(
+				__FUNCTION__,
+				sprintf(
+					'An unexpected error occurred. Something may be wrong with %s or this server&#8217;s configuration. If you continue to have problems, contact support:- %s',
+					sanitize_text_field( $this->host_name ),
+					$response->get_error_message()
+				),
+				headers_sent() || WP_DEBUG ? E_USER_WARNING : E_USER_NOTICE
+			);
+
+			return false;
+		}
+
+		return json_decode( wp_json_encode( $response ), true );
 	}
 }
