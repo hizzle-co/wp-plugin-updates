@@ -125,6 +125,7 @@ class Main {
 		add_action( 'rest_api_init', array( $this, 'register_rest_routes' ) );
 		add_filter( "update_plugins_{$this->host_name}", array( $this, 'filter_update_plugins' ), 10, 4 );
 		add_filter( 'plugins_api', array( $this, 'plugins_api' ), 20, 3 );
+		add_action( 'plugins_loaded', array( $this, 'add_notice_unlicensed_product' ) );
 	}
 
 	/**
@@ -410,7 +411,7 @@ class Main {
 	 */
 	public function add_notice_unlicensed_product() {
 		if ( is_admin() && function_exists( 'get_plugins' ) ) {
-			foreach ( array_keys( $this->get_installed_addons() ) as $key ) {
+			foreach ( array_keys( $this->plugins ) as $key ) {
 				add_action( 'in_plugin_update_message-' . $key, array( $this, 'need_license_message' ), 10, 2 );
 			}
 		}
@@ -425,12 +426,12 @@ class Main {
 	 */
 	public function need_license_message( $plugin_data, $r ) {
 
-		if ( empty( $r->package ) ) {
+		if ( empty( $r->package ) && isset( $this->plugins[ $plugin_data['plugin'] ]['admin'] ) ) {
 			printf(
 				'<span style="display: block;margin-top: 10px;font-weight: 600; color: #a00;">%s</span>',
 				sprintf(
 					wp_kses_post( 'To update, please <a href="%s">activate your license key</a>.' ),
-					esc_url( $this->get_license_admin_url() )
+					esc_url( $this->plugins[ $plugin_data['plugin'] ]['admin'] )
 				)
 			);
 		}
@@ -441,12 +442,15 @@ class Main {
 	 *
 	 * @param string $plugin_path The full path to the plugin file.
 	 * @param string $repo
+	 * @param string $admin_url The admin URL for managing the license.
 	 */
-	public function add( $plugin_path, $repo ) {
+	public function add( $plugin_path, $repo, $admin_url = null ) {
 		$this->plugins[ plugin_basename( $plugin_path ) ] = array(
-			'repo' => $repo,
-			'slug' => dirname( plugin_basename( $plugin_path ) ),
-			'file' => $plugin_path,
+			'repo'   => $repo,
+			'slug'   => dirname( plugin_basename( $plugin_path ) ),
+			'plugin' => plugin_basename( $plugin_path ),
+			'path'   => $plugin_path,
+			'admin'  => $admin_url,
 		);
 	}
 
@@ -515,7 +519,7 @@ class Main {
 			return $response;
 		}
 
-		$response = $this->filter_update_plugins( false, array(), $plugin['file'], array(), true );
+		$response = $this->filter_update_plugins( false, array(), $plugin['plugin'], array(), true );
 
 		if ( is_wp_error( $response ) ) {
 			return $response;
