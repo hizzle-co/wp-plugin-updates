@@ -721,6 +721,10 @@ class Main {
 	 */
 	public function maybe_print_expired_license_key_notice() {
 
+		if ( ! $this->check_rest_permissions() ) {
+			return;
+		}
+
 		// Fetch premium add-ons.
 		$premium_addons = array();
 
