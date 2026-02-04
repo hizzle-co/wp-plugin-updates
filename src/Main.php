@@ -28,12 +28,7 @@ class Main {
 	/**
 	 * @var array $plugins $plugin_file => $git_url
 	 */
-	public $plugins;
-
-	/**
-	 * @var Updater The current updater instance.
-	 */
-	public $updater;
+	public $plugins = array();
 
 	/**
 	 * @var Helper The helper instance.
@@ -119,7 +114,6 @@ class Main {
 			}
 		}
 
-		$this->updater = new Updater( $this );
 		$this->helper  = new Helper( $this );
 
 		add_action( 'rest_api_init', array( $this, 'register_rest_routes' ) );
@@ -612,11 +606,20 @@ class Main {
 				),
 				headers_sent() || WP_DEBUG ? E_USER_WARNING : E_USER_NOTICE
 			);
-		} elseif ( empty( $response->download_link ) ) {
-			$response->upgrade_notice = sprintf(
-				'To update, please <a href="%s">activate your license key</a>.',
-				$this->plugins[ $plugin_file ]['admin'] ?? '#'
-			);
+		} else {
+			if ( empty( $response->download_link ) ) {
+				$response->upgrade_notice = sprintf(
+					'To update, please <a href="%s">activate your license key</a>.',
+					$this->plugins[ $plugin_file ]['admin'] ?? '#'
+				);
+			}
+
+			$response->id          = $this->plugins[ $plugin_file ]['repo'];
+			$response->slug        = $this->plugins[ $plugin_file ]['slug'];
+			$response->plugin      = $plugin_file;
+			$response->new_version = $response->version;
+			$response->package     = $response->download_link;
+			$response->tested      = $response->tested;
 		}
 
 		return $response;
