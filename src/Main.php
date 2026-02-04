@@ -402,87 +402,6 @@ class Main {
 	}
 
 	/**
-	 * Plugin information callback for our plugins.
-	 *
-	 * @param object $response The response core needs to display the modal.
-	 * @param string $action The requested plugins_api() action.
-	 * @param object $args Arguments passed to plugins_api().
-	 *
-	 * @return object An updated $response.
-	 */
-	public static function plugins_api( $response, $action, $args ) {
-		if ( 'plugin_information' !== $action || empty( $args->slug ) ) {
-			return $response;
-		}
-
-		// Only for slugs that start with noptin-
-		if ( 0 !== strpos( $args->slug, 'noptin-' ) ) {
-			return $response;
-		}
-
-		// Get download slug.
-		$download_slug = str_replace( 'noptin-plugin-with-slug-', '', sanitize_key( $args->slug ) );
-		$git_url       = 'hizzle-co/' . $download_slug;
-
-		// Abort if cannot get download slug.
-		if ( empty( $download_slug ) ) {
-			return $response;
-		}
-
-		$endpoint = add_query_arg(
-			array(
-				'hizzle_license_url' => rawurlencode( home_url() ),
-				'hizzle_license'     => rawurlencode( Noptin_COM::get_active_license_key() ),
-				'downloads'          => rawurlencode( $git_url ),
-			),
-			'https://my.noptin.com/wp-json/hizzle_download/v1/versions'
-		);
-
-		$key          = 'noptin_versions_' . md5( $endpoint );
-		$new_response = get_transient( $key );
-
-		if ( false === $new_response ) {
-			$new_response = Noptin_COM::process_api_response(
-				wp_remote_get(
-					$endpoint,
-					array(
-						'timeout' => 15,
-						'headers' => array(
-							'Accept'           => 'application/json',
-							'X-Requested-With' => 'Noptin',
-						),
-					)
-				)
-			);
-
-			if ( ! is_wp_error( $new_response ) ) {
-				set_transient( $key, $new_response, 5 * MINUTE_IN_SECONDS );
-			}
-		}
-
-		if ( is_wp_error( $new_response ) ) {
-			return new WP_Error( 'plugins_api_failed', $new_response->get_error_message() );
-		}
-
-		$new_response = json_decode( wp_json_encode( $new_response ), true );
-		if ( empty( $new_response[ $git_url ] ) ) {
-			return new WP_Error( 'plugins_api_failed', __( 'Error fetching downloadable file', 'newsletter-optin-box' ) );
-		}
-
-		if ( ! empty( $new_response[ $git_url ]['error'] ) ) {
-			if ( ! empty( $new_response[ $git_url ]['error']['error_code'] ) && 'download_file_not_found' === $new_response[ $git_url ]['error']['error_code'] ) {
-				return $response;
-			}
-
-			return new WP_Error( 'plugins_api_failed', $new_response[ $git_url ]['error'] );
-		}
-
-		$new_response[ $git_url ]['slug'] = $args->slug;
-
-		return (object) $new_response[ $git_url ];
-	}
-
-	/**
 	 * Add action for queued plugins to display message for unlicensed plugins.
 	 *
 	 * @access  public
@@ -578,6 +497,38 @@ class Main {
 	}
 
 	/**
+	 * Plugin information callback for our plugins.
+	 *
+	 * @param object $response The response core needs to display the modal.
+	 * @param string $action The requested plugins_api() action.
+	 * @param object $args Arguments passed to plugins_api().
+	 *
+	 * @return object An updated $response.
+	 */
+	public function plugins_api( $response, $action, $args ) {
+		if ( 'plugin_information' !== $action || empty( $args->slug ) ) {
+			return $response;
+		}
+
+		$plugin = $this->get_plugin_by_prop( $args->slug, 'slug' );
+		if ( empty( $plugin ) ) {
+			return $response;
+		}
+
+		$response = $this->filter_update_plugins( false, array(), $plugin['file'], array(), true );
+
+		if ( is_wp_error( $response ) ) {
+			return $response;
+		}
+
+		if ( $response && isset( $response->error ) && isset( $response->error_code ) ) {
+			return new \WP_Error( $response->error_code, $response->error );
+		}
+
+		return $response;
+	}
+
+	/**
 	 * Filters the update response for a given plugin hostname.
 	 *
 	 * The dynamic portion of the hook name, `$hostname`, refers to the hostname
@@ -615,8 +566,10 @@ class Main {
 	 * @param array       $plugin_data      Plugin headers.
 	 * @param string      $plugin_file      Plugin filename.
 	 * @param string[]    $locales          Installed locales to look up translations for.
+	 * @param bool        $return_wp_error  Whether to return a WP_Error on failure.
+	 * @return array|false|WP_Error The plugin update data or false if no update
 	 */
-	public function filter_update_plugins( $update, $plugin_data, $plugin_file, $locales ) {
+	public function filter_update_plugins( $update, $plugin_data, $plugin_file, $locales, $return_wp_error = false ) {
 
 		if ( is_array( $update ) || isset( $this->plugins[ $plugin_file ] ) ) {
 			return $update;
@@ -656,9 +609,23 @@ class Main {
 				headers_sent() || WP_DEBUG ? E_USER_WARNING : E_USER_NOTICE
 			);
 
-			return false;
+			return $return_wp_error ? $response : false;
 		}
 
-		return json_decode( wp_json_encode( $response ), true );
+		$response = $response[ $this->plugins[ $plugin_file ]['repo'] ] ?? false;
+
+		if ( $response && isset( $response->error ) && isset( $response->error_code ) ) {
+			wp_trigger_error(
+				__FUNCTION__,
+				sprintf(
+					'An unexpected error occurred. Something may be wrong with %s or this server&#8217;s configuration. If you continue to have problems, contact support:- %s',
+					sanitize_text_field( $this->host_name ),
+					sanitize_text_field( $response->error )
+				),
+				headers_sent() || WP_DEBUG ? E_USER_WARNING : E_USER_NOTICE
+			);
+		}
+
+		return $response;
 	}
 }
