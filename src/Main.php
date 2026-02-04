@@ -38,21 +38,9 @@ class Main {
 	public $plugins = array();
 
 	/**
-	 * Base URL of your licensing server, e.g, https://my-plugin-site.com.
-	 *
-	 * @var string
-	 */
-	public $api_url;
-
-	/**
 	 * The prefix used to store the helper data.
 	 */
 	public $prefix;
-
-	/**
-	 * For plugins that use addons instead of a premium version.
-	 */
-	public $group;
 
 	/**
 	 * @var string Full path to the main plugin file, e.g, my-plugin/my-plugin.php.
@@ -81,13 +69,6 @@ class Main {
 			return self::$instances[ $host_name ];
 		}
 
-		foreach ( array( 'api_url', 'plugin_file', 'github_repo' ) as $required_key ) {
-			if ( empty( $config[ $required_key ] ) ) {
-				_doing_it_wrong( __METHOD__, sprintf( 'Missing required config key: %s', esc_html( $required_key ) ), '1.0.0' );
-				return null;
-			}
-		}
-
 		$config['host_name']           = $host_name;
 		self::$instances[ $host_name ] = new self( $config );
 
@@ -100,8 +81,6 @@ class Main {
 	 * @param array $config Configuration array.
 	 */
 	private function __construct( $config ) {
-		$config['api_url'] = untrailingslashit( $config['api_url'] );
-
 		foreach ( $config as $key => $value ) {
 			if ( property_exists( $this, $key ) ) {
 				$this->{$key} = $value;
@@ -109,11 +88,7 @@ class Main {
 		}
 
 		if ( empty( $this->prefix ) ) {
-			if ( ! empty( $this->group ) ) {
-				$this->prefix = $this->group;
-			} else {
-				$this->prefix = str_replace( '.', '_', wp_parse_url( $this->api_url, PHP_URL_HOST ) );
-			}
+			$this->prefix = str_replace( '.', '_', $this->host_name );
 		}
 
 		if ( empty( $this->option_name ) ) {
@@ -125,27 +100,6 @@ class Main {
 		add_filter( 'plugins_api', array( $this, 'plugins_api' ), 20, 3 );
 		add_action( 'plugins_loaded', array( $this, 'add_notice_unlicensed_product' ) );
 		add_action( 'admin_notices', array( $this, 'maybe_print_expired_license_key_notice' ) );
-	}
-
-	/**
-	 * Checks if this is noptin.
-	 */
-	public function is_noptin() {
-		return 'noptin' === $this->prefix;
-	}
-
-	/**
-	 * Checks if this is our plugin.
-	 *
-	 * @param string $plugin_file The plugin file to check.
-	 */
-	public function is_our_plugin( $plugin_file ) {
-
-		if ( $plugin_file === $this->plugin_file ) {
-			return true;
-		}
-
-		return ! empty( $this->group ) && 0 === strpos( $plugin_file, $this->group . '-' );
 	}
 
 	/*
