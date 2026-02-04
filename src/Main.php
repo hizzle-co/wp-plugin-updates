@@ -166,7 +166,7 @@ class Main {
 						'required'          => false,
 						'type'              => 'string',
 						'sanitize_callback' => 'sanitize_text_field',
-						'description'       => 'The plugin slug (for multi-plugin licenses).',
+						'description'       => 'The plugin repo.',
 					),
 				),
 			)
@@ -184,7 +184,7 @@ class Main {
 						'required'          => false,
 						'type'              => 'string',
 						'sanitize_callback' => 'sanitize_text_field',
-						'description'       => 'The plugin slug (for multi-plugin licenses).',
+						'description'       => 'The plugin repo.',
 					),
 				),
 			)
@@ -192,11 +192,74 @@ class Main {
 	}
 
 	public function check_rest_permissions() {
-		if ( $this->is_noptin() && function_exists( 'get_noptin_capability' ) ) {
-			return current_user_can( get_noptin_capability() );
+		$cap = sprintf( 'get_%s_capability', $this->prefix );
+
+		if ( function_exists( $cap ) ) {
+			return current_user_can( call_user_func( $cap ) );
 		}
 
 		return current_user_can( 'manage_options' );
+	}
+
+	/**
+	 * REST API callback to activate a license key.
+	 *
+	 * @param \WP_REST_Request $request The REST request object.
+	 * @return \WP_REST_Response|WP_Error The response or error.
+	 */
+	public function rest_activate_license( $request ) {
+		$license_key = $request->get_param( 'license_key' );
+		$plugin      = $request->get_param( 'plugin' );
+
+		// Delete cached details.
+		delete_transient( sanitize_key( $this->prefix . '_license_' . $license_key ) );
+
+		// Activate the license key remotely.
+		$result = self::process_api_response(
+			wp_remote_post(
+				"https://{$this->host_name}/wp-json/hizzle/v1/licenses/{$license_key}/activate",
+				array(
+					'body'    => array(
+						'website'   => home_url(),
+						'downloads' => $plugin,
+					),
+					'headers' => array(
+						'Accept' => 'application/json',
+					),
+				)
+			)
+		);
+
+		// Abort if there was an error.
+		if ( is_wp_error( $result ) ) {
+			return new \WP_Error(
+				$result->get_error_code(),
+				sprintf(
+					/* translators: %s: Error message. */
+					__( 'There was an error activating your license key: %s', 'newsletter-optin-box' ),
+					$result->get_error_message()
+				),
+				$result->get_error_data()
+			);
+		}
+
+		// Save the license key.
+		if ( ! empty( $plugin ) ) {
+			$this->update( 'license_key_' . $plugin, $license_key );
+		}
+
+		// Global licenses.
+		if ( ! empty( $result->is_membership ) && $result->is_membership ) {
+			$this->update( 'license_key', $license_key );
+		}
+
+		return rest_ensure_response(
+			array(
+				'success' => true,
+				'message' => __( 'Your license key has been activated successfully. You will now receive updates and support for this website.', 'newsletter-optin-box' ),
+				'data'    => $result,
+			)
+		);
 	}
 
 	/**
