@@ -253,11 +253,84 @@ class Main {
 			$this->update( 'license_key', $license_key );
 		}
 
+		// Clear update cache.
+		delete_site_transient( 'update_plugins' );
+
 		return rest_ensure_response(
 			array(
 				'success' => true,
 				'message' => __( 'Your license key has been activated successfully. You will now receive updates and support for this website.', 'newsletter-optin-box' ),
 				'data'    => $result,
+			)
+		);
+	}
+
+	/**
+	 * Handle license deactivation.
+	 *
+	 * @param \WP_REST_Request $request The REST request object.
+	 */
+	public function rest_deactivate_license( $request ) {
+
+		$plugin      = $request->get_param( 'plugin' );
+		$license_key = $this->get_active_license_key( false, $plugin );
+
+		if ( empty( $license_key ) ) {
+			return array(
+				'success' => true,
+				'message' => __( 'License key deactivated successfully. You will no longer receive product updates and support for this site.', 'newsletter-optin-box' ),
+			);
+		}
+
+		// Delete cached details.
+		delete_transient( sanitize_key( $this->prefix . '_license_' . $license_key ) );
+
+		// Deactive the license key remotely.
+		$result = self::process_api_response(
+			wp_remote_post(
+				"https://{$this->host_name}/wp-json/hizzle/v1/licenses/{$license_key}/deactivate",
+				array(
+					'body'    => array(
+						'website'   => home_url(),
+						'downloads' => $plugin,
+					),
+					'headers' => array(
+						'Accept' => 'application/json',
+					),
+				)
+			)
+		);
+
+		// Abort if there was an error.
+		if ( is_wp_error( $result ) ) {
+			return new \WP_Error(
+				$result->get_error_code(),
+				sprintf(
+					/* translators: %s: Error message. */
+					__( 'There was an error deactivating your license key: %s', 'newsletter-optin-box' ),
+					$result->get_error_message()
+				),
+				$result->get_error_data()
+			);
+		}
+
+		// Save the license key.
+		if ( ! empty( $plugin ) ) {
+			$this->update( 'license_key_' . $plugin, '' );
+		}
+
+		// Global licenses.
+		if ( ! empty( $result->is_membership ) && $result->is_membership ) {
+			$this->update( 'license_key', '' );
+		}
+
+		// Clear update cache.
+		delete_site_transient( 'update_plugins' );
+
+		return rest_ensure_response(
+			array(
+				'success' => true,
+				'message' => __( 'License key deactivated successfully. You will no longer receive product updates and support for this site.', 'newsletter-optin-box' ),
 			)
 		);
 	}
