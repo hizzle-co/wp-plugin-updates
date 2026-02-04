@@ -43,21 +43,6 @@ class Main {
 	public $prefix;
 
 	/**
-	 * @var string Full path to the main plugin file, e.g, my-plugin/my-plugin.php.
-	 */
-	public $plugin_file;
-
-	/**
-	 * @var string GitHub repository of the plugin, e.g, organization/my-plugin.
-	 */
-	public $github_repo;
-
-	/**
-	 * @var string Admin page slug for managing licenses. Defaults to ''.
-	 */
-	public $manage_license_page;
-
-	/**
 	 * Initialize the updater with configuration.
 	 *
 	 * @param string $host_name The hostname, e.g, my.noptin.com
@@ -89,6 +74,11 @@ class Main {
 
 		if ( empty( $this->prefix ) ) {
 			$this->prefix = str_replace( '.', '_', $this->host_name );
+
+			// Backwards compatibility.
+			if ( 'my_noptin_com' === $this->prefix ) {
+				$this->prefix = 'noptin';
+			}
 		}
 
 		if ( empty( $this->option_name ) ) {
