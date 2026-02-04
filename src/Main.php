@@ -170,7 +170,7 @@ class Main {
 		$plugin      = $request->get_param( 'plugin' );
 
 		// Delete cached details.
-		delete_transient( sanitize_key( $this->prefix . '_license_' . $license_key ) );
+		delete_transient( sanitize_key( $this->prefix . '_license_' . md5( $license_key ) ) );
 
 		// Activate the license key remotely.
 		$result = self::process_api_response(
@@ -241,7 +241,7 @@ class Main {
 		}
 
 		// Delete cached details.
-		delete_transient( sanitize_key( $this->prefix . '_license_' . $license_key ) );
+		delete_transient( sanitize_key( $this->prefix . '_license_' . md5( $license_key ) ) );
 
 		// Deactive the license key remotely.
 		$result = self::process_api_response(
@@ -418,7 +418,7 @@ class Main {
 	 */
 	private function fetch_license_details( $license_key, $plugin = '' ) {
 		$license_key = sanitize_text_field( $license_key );
-		$cache_key   = sanitize_key( $this->prefix . '_license_' . $license_key );
+		$cache_key   = sanitize_key( $this->prefix . '_license_' . md5( $license_key ) );
 		$cached      = get_transient( $cache_key );
 
 		// Abort early if details were cached.
@@ -633,7 +633,7 @@ class Main {
 	 */
 	public function filter_update_plugins( $update, $plugin_data, $plugin_file, $locales, $return_wp_error = false ) {
 
-		if ( is_array( $update ) || isset( $this->plugins[ $plugin_file ] ) ) {
+		if ( is_array( $update ) || ! isset( $this->plugins[ $plugin_file ] ) ) {
 			return $update;
 		}
 
