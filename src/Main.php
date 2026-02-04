@@ -21,6 +21,13 @@ class Main {
 	private static $instances = array();
 
 	/**
+	 * The option name used to store the helper data.
+	 *
+	 * @var string
+	 */
+	private $option_name;
+
+	/**
 	 * @var string $host_name
 	 */
 	public $host_name;
@@ -29,11 +36,6 @@ class Main {
 	 * @var array $plugins $plugin_file => $git_url
 	 */
 	public $plugins = array();
-
-	/**
-	 * @var Helper The helper instance.
-	 */
-	public $helper;
 
 	/**
 	 * Base URL of your licensing server, e.g, https://my-plugin-site.com.
@@ -114,12 +116,15 @@ class Main {
 			}
 		}
 
-		$this->helper  = new Helper( $this );
+		if ( empty( $this->option_name ) ) {
+			$this->option_name = $this->prefix . '_helper_data';
+		}
 
 		add_action( 'rest_api_init', array( $this, 'register_rest_routes' ) );
 		add_filter( "update_plugins_{$this->host_name}", array( $this, 'filter_update_plugins' ), 10, 4 );
 		add_filter( 'plugins_api', array( $this, 'plugins_api' ), 20, 3 );
 		add_action( 'plugins_loaded', array( $this, 'add_notice_unlicensed_product' ) );
+		add_action( 'admin_notices', array( $this, 'maybe_print_expired_license_key_notice' ) );
 	}
 
 	/**
@@ -142,6 +147,15 @@ class Main {
 
 		return ! empty( $this->group ) && 0 === strpos( $plugin_file, $this->group . '-' );
 	}
+
+	/*
+	|--------------------------------------------------------------------------
+	| REST API routes
+	|--------------------------------------------------------------------------
+	|
+	| Methods which activate/deactivate license keys via REST API.
+	|
+	*/
 
 	/**
 	 * Register REST API routes.
@@ -335,6 +349,15 @@ class Main {
 		);
 	}
 
+	/*
+	|--------------------------------------------------------------------------
+	| Options
+	|--------------------------------------------------------------------------
+	|
+	| Methods which get/update helper options.
+	|
+	*/
+
 	/**
 	 * Get an option by key
 	 *
@@ -346,7 +369,7 @@ class Main {
 	 * @return mixed An option or the default.
 	 */
 	public function get( $key, $default_value = false ) {
-		$options = get_option( $this->prefix . '_helper_data', array() );
+		$options = get_option( $this->option_name, array() );
 		$options = is_array( $options ) ? $options : array();
 
 		return array_key_exists( $key, $options ) ? $options[ $key ] : $default_value;
@@ -364,10 +387,10 @@ class Main {
 	 * @return bool True if the option has been updated.
 	 */
 	public function update( $key, $value ) {
-		$options         = get_option( $this->prefix . '_helper_data', array() );
+		$options         = get_option( $this->option_name, array() );
 		$options         = is_array( $options ) ? $options : array();
 		$options[ $key ] = $value;
-		return update_option( $this->prefix . '_helper_data', $options, true );
+		return update_option( $this->option_name, $options, true );
 	}
 
 	/*
@@ -375,7 +398,7 @@ class Main {
 	| License keys
 	|--------------------------------------------------------------------------
 	|
-	| Methods which activate/deactivate license keys locally and remotely.
+	| Methods which get license key details locally and remotely.
 	|
 	*/
 
@@ -383,37 +406,39 @@ class Main {
 	 * Returns the active license key.
 	 *
 	 * @param bool $include_details
-	 * @return object|WP_Error|string|false
+	 * @return object|\WP_Error|string|false
 	 * @since 1.8.0
 	 */
 	public function get_active_license_key( $include_details = false, $plugin = '' ) {
 
 		// Fetch the license key.
-		$option_key  = $this->is_noptin() ? 'license_key' : ( 'license_key_' . $plugin );
-		$license_key = $this->get( $option_key );
+		$license_key = '';
 
-		// If not set, try to fetch the old style license keys.
-		if ( empty( $license_key ) && $this->is_noptin() ) {
-			$licenses = $this->get( 'active_license_keys' );
-
-			if ( is_array( $licenses ) && ! empty( $licenses ) ) {
-				$license_key = array_pop( $licenses );
-			}
+		// Fetch plugin specific license key.
+		if ( ! empty( $plugin ) ) {
+			$license_key = $this->get( 'license_key_' . $plugin, '' );
 		}
 
+		// Fallback to global license key.
 		if ( empty( $license_key ) ) {
-			return false;
+			$license_key = $this->get( 'license_key' );
 		}
 
-		if ( ! $include_details ) {
+		if ( empty( $license_key ) || ! $include_details ) {
 			return $license_key;
 		}
 
-		$details = $this->fetch_license_details( $license_key );
+		$details = $this->fetch_license_details( $license_key, $plugin );
 
 		if ( is_wp_error( $details ) ) {
 			if ( in_array( 'hizzle_licenses_not_found', $details->get_error_codes(), true ) ) {
-				$this->update( $option_key, '' );
+				if ( ! empty( $plugin ) ) {
+					$this->update( 'license_key_' . $plugin, '' );
+				}
+
+				if ( $license_key === $this->get( 'license_key' ) ) {
+					$this->update( 'license_key', '' );
+				}
 			}
 
 			return $details;
@@ -425,7 +450,14 @@ class Main {
 
 		// Check if it was deactivated remotely.
 		if ( empty( $details->is_active_on_site ) ) {
-			$this->update( $option_key, '' );
+			if ( ! empty( $plugin ) ) {
+				$this->update( 'license_key_' . $plugin, '' );
+			}
+
+			if ( $license_key === $this->get( 'license_key' ) ) {
+				$this->update( 'license_key', '' );
+			}
+
 			return false;
 		}
 
@@ -436,12 +468,13 @@ class Main {
 	 * Fetches license details from the cache or remotely.
 	 *
 	 * @param string $license_key
-	 * @return object|WP_Error
+	 * @param string $plugin
+	 * @return object|\WP_Error
 	 * @since 1.7.0
 	 */
-	private function fetch_license_details( $license_key ) {
+	private function fetch_license_details( $license_key, $plugin = '' ) {
 		$license_key = sanitize_text_field( $license_key );
-		$cache_key   = sanitize_key( 'noptin_license_' . $license_key );
+		$cache_key   = sanitize_key( $this->prefix . '_license_' . $license_key );
 		$cached      = get_transient( $cache_key );
 
 		// Abort early if details were cached.
@@ -452,12 +485,17 @@ class Main {
 		// Fetch details remotely.
 		$license = self::process_api_response(
 			wp_remote_get(
-				"$this->api_url/wp-json/hizzle/v1/licenses/$license_key/?website=" . rawurlencode( home_url() ),
+				add_query_arg(
+					array(
+						'website'   => rawurlencode( home_url() ),
+						'downloads' => rawurlencode( $plugin ),
+					),
+					"https://{$this->host_name}/wp-json/hizzle/v1/licenses/{$license_key}/"
+				),
 				array(
 					'timeout' => 15,
 					'headers' => array(
-						'Accept'           => 'application/json',
-						'X-Requested-With' => 'WPPluginUpdates',
+						'Accept' => 'application/json',
 					),
 				)
 			)
@@ -502,34 +540,6 @@ class Main {
 		}
 
 		return $res;
-	}
-
-	/**
-	 * Retrieves a list of installed extensions.
-	 *
-	 * @return array
-	 */
-	public function get_installed_addons() {
-
-		if ( ! function_exists( 'get_plugins' ) ) {
-			require_once ABSPATH . 'wp-admin/includes/plugin.php';
-		}
-
-		$our_plugins = array();
-
-		foreach ( get_plugins() as $filename => $data ) {
-			$slug = basename( dirname( $filename ) );
-
-			if ( $this->is_our_plugin( $filename ) ) {
-				$data['_filename']        = $filename;
-				$data['slug']             = $slug;
-				$data['_type']            = 'plugin';
-				$data['github_repo']      = $filename === $this->plugin_file ? $this->github_repo : 'hizzle-co/' . $slug;
-				$our_plugins[ $filename ] = $data;
-			}
-		}
-
-		return $our_plugins;
 	}
 
 	/**
@@ -687,7 +697,7 @@ class Main {
 		$url = add_query_arg(
 			array(
 				'hizzle_license_url' => rawurlencode( home_url() ),
-				'hizzle_license'     => rawurlencode( $this->get_active_license_key( false, $plugin_file ) ),
+				'hizzle_license'     => rawurlencode( $this->get_active_license_key( false, $this->plugins[ $plugin_file ]['repo'] ?? '' ) ),
 				'downloads'          => rawurlencode( $this->plugins[ $plugin_file ]['repo'] ),
 				'locales'            => rawurlencode( implode( ',', $locales ) ),
 			),
@@ -759,5 +769,48 @@ class Main {
 		}
 
 		return $response;
+	}
+
+	/**
+	 * Checks if we should print an expired license key notice.
+	 *
+	 */
+	public function maybe_print_expired_license_key_notice() {
+
+		// Fetch premium add-ons.
+		$premium_addons = array();
+
+		foreach ( $this->plugins as $plugin ) {
+			$license_key = $this->get_active_license_key( false, $plugin['repo'] );
+			if ( empty( $license_key ) ) {
+				$premium_addons[] = $plugin['slug'];
+			}
+		}
+
+		// Abort if none exists.
+		if ( ! empty( $premium_addons ) ) {
+			$notice  = '<strong>Your site is at RISK!</strong>. You need an active license key to keep using premium plugins.';
+
+			// Add active addons.
+			$notice .= "\n\n";
+			$notice .= sprintf(
+				// translators: %s: Plugin names.
+				_n(
+					'The following plugin is currently active: %s',
+					'The following plugins are currently active: %s.',
+					count( $premium_addons ),
+					'newsletter-optin-box'
+				),
+				'<code>' . implode( '</code>, <code>', $premium_addons ) . '</code>'
+			);
+
+			// Add a link to the license page.
+			$notice .= "\n\n" . '<a href="https://' . $this->host_name . '" class="button button-primary">' . __( 'Get a license key', 'newsletter-optin-box' ) . '</a>';
+
+			printf(
+				'<div class="error noptin-message">%s</div>',
+				wp_kses_post( wpautop( $notice ) )
+			);
+		}
 	}
 }
