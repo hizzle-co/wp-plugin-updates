@@ -475,32 +475,6 @@ class Main {
 	}
 
 	/**
-	 * Change the update information for unlicensed plugins.
-	 *
-	 * @param  object $transient The update-plugins transient.
-	 * @return object
-	 */
-	public function change_update_information( $transient ) {
-
-		// If we are on the update core page, change the update message for unlicensed products.
-		global $pagenow;
-		if ( ( 'update-core.php' === $pagenow ) && $transient && isset( $transient->response ) && ! isset( $_GET['action'] ) ) {
-			$notice = sprintf(
-				'To update, please <a href="%s">activate your license key</a>.',
-				$this->get_license_admin_url()
-			);
-
-			foreach ( array_keys( $this->get_installed_addons() ) as $key ) {
-				if ( isset( $transient->response[ $key ] ) && ( empty( $transient->response[ $key ]->package ) ) ) {
-					$transient->response[ $key ]->upgrade_notice = $notice;
-				}
-			}
-		}
-
-		return $transient;
-	}
-
-	/**
 	 * Plugin information callback for our plugins.
 	 *
 	 * @param object $response The response core needs to display the modal.
@@ -616,9 +590,19 @@ class Main {
 			return $return_wp_error ? $response : false;
 		}
 
-		$response = $response[ $this->plugins[ $plugin_file ]['repo'] ] ?? false;
+		if ( ! isset( $response[ $this->plugins[ $plugin_file ]['repo'] ] ) ) {
+			return $return_wp_error ? new \WP_Error(
+				'hizzle_no_update_info',
+				sprintf(
+					'No update information found for %s. Please contact support if you believe this is an error.',
+					sanitize_text_field( $plugin_data['Name'] ?? $plugin_file )
+				)
+			) : false;
+		}
 
-		if ( $response && isset( $response->error ) && isset( $response->error_code ) ) {
+		$response = $response[ $this->plugins[ $plugin_file ]['repo'] ];
+
+		if ( isset( $response->error ) && isset( $response->error_code ) ) {
 			wp_trigger_error(
 				__FUNCTION__,
 				sprintf(
@@ -627,6 +611,11 @@ class Main {
 					sanitize_text_field( $response->error )
 				),
 				headers_sent() || WP_DEBUG ? E_USER_WARNING : E_USER_NOTICE
+			);
+		} elseif ( empty( $response->download_link ) ) {
+			$response->upgrade_notice = sprintf(
+				'To update, please <a href="%s">activate your license key</a>.',
+				$this->plugins[ $plugin_file ]['admin'] ?? '#'
 			);
 		}
 
