@@ -38,7 +38,7 @@ In your main plugin file, initialize the library with your server configuration:
  * Domain Path: /languages/
  * Requires at least: 5.5
  * Requires PHP: 7.0
- * Update URI: your-licensing-server.com
+ * Update URI: your-licensing-server.com/your-plugin-slug
  */
 
 // Update URI above is required for WordPress to recognize this plugin as updateable from your server. It should match the hostname of your licensing server.
