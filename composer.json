@@ -18,5 +18,14 @@
             "Hizzle\\WP_Plugin_Updates\\": "src/"
         }
     },
-    "minimum-stability": "stable"
+    "minimum-stability": "stable",
+    "archive": {
+        "exclude": [
+            "vendor/",
+            ".gitignore",
+            "CHANGELOG.md",
+            "README.md",
+            "renovate.json"
+        ]
+    }
 }

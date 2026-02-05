@@ -737,7 +737,7 @@ class Main {
 
 		// Abort if none exists.
 		if ( ! empty( $premium_addons ) ) {
-			$notice  = '<strong>Your site is at RISK!</strong>. You need an active license key to keep using premium plugins.';
+			$notice = '<strong>Your site is at RISK!</strong>. You need an active license key to keep using premium plugins.';
 
 			// Add active addons.
 			$notice .= "\n\n";
