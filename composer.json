@@ -2,7 +2,7 @@
     "name": "hizzle/wp-plugin-updates",
     "version": "0.0.1",
     "type": "library",
-    "description": "A flexible WordPress plugin updater library for serving updates from any custom server",
+    "description": "Hizzle Licenses WordPress plugin updater library",
     "keywords": ["wordpress", "plugin", "updates", "updater", "license"],
     "license": "GPL-3.0-or-later",
     "authors": [

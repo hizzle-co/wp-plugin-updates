@@ -1,14 +1,13 @@
 # WP Plugin Updates
 
-A flexible WordPress plugin updater library for serving updates from any custom server. This library allows you to distribute WordPress plugins with automatic updates from your own licensing server.
+This library allows you to distribute WordPress plugins with automatic updates from your own Hizzle Licenses licensing server.
 
 ## Features
 
-- **Flexible Configuration**: Works with any licensing server, not just specific ones
+- **Flexible Configuration**: Works with any custom licensing server in addition to Hizzle Licenses
 - **License Management**: Built-in license activation/deactivation system
 - **Automatic Updates**: Integrates seamlessly with WordPress's update system
 - **REST API**: Optional REST endpoints for license management
-- **Customizable**: Extensive hooks and filters for customization
 - **Secure**: Follows WordPress best practices and security standards
 
 ## Installation
@@ -27,67 +26,49 @@ In your main plugin file, initialize the library with your server configuration:
 
 ```php
 <?php
-use Hizzle\WP_Plugin_Updates\Main;
-use Hizzle\WP_Plugin_Updates\Updater;
+
+/**
+ * Plugin Name: My Plugin
+ * Plugin URI: https://myplugin.com
+ * Description: Example plugin using Hizzle Licenses updater library
+ * Version: 1.0.0
+ * Author: Your Name
+ * Author URI: https://yourwebsite.com
+ * Text Domain: my-plugin
+ * Domain Path: /languages/
+ * Requires at least: 5.5
+ * Requires PHP: 7.0
+ * Update URI: your-licensing-server.com
+ */
+
+// Update URI above is required for WordPress to recognize this plugin as updateable from your server. It should match the hostname of your licensing server.
+
+defined( 'ABSPATH' ) || exit;
+
+// Include the auto loader.
+require 'vendor/autoload.php';
 
 // Initialize with your server configuration
-Main::init( array(
-    'api_url'            => 'https://your-licensing-server.com',
-    'plugin_prefix'      => 'myplugin-',
-    'text_domain'        => 'my-plugin',
-    'product_url'        => 'https://your-site.com/pricing/',
-    'manage_license_page' => 'my-plugin-license',
-) );
+$updater = \Hizzle\WP_Plugin_Updates\Main::init(
+    'your-licensing-server.com', // Hostname of your licensing server.
+    array(
+        'prefix' => 'my_prefix', // Optional prefix for options and transients (default: 'your_licensing_server_com').
+    )
+);
 
-// Load the updater
-Updater::load();
+// Register your plugin.
+$updater->add( __FILE__, 'github-org/your-plugin-slug', admin_url( 'admin.php?page=my-plugin-license' ) );
 ```
 
-### 2. Configuration Options
-
-| Option | Type | Required | Description |
-|--------|------|----------|-------------|
-| `api_url` | string | Yes | Base URL of your licensing server |
-| `license_api_url` | string | No | Full URL to license API endpoint. Defaults to `{api_url}/wp-json/hizzle/v1/licenses` |
-| `versions_api_url` | string | No | Full URL to versions API endpoint. Defaults to `{api_url}/wp-json/hizzle_download/v1/versions` |
-| `option_name` | string | No | WordPress option name for storing data. Default: `wp_plugin_updates_data` |
-| `plugin_prefix` | string | No | Prefix for your plugins (e.g., `myplugin-`). If empty, all plugins are checked |
-| `text_domain` | string | No | Text domain for translations. Default: `default` |
-| `api_headers` | array | No | Additional HTTP headers to send with API requests |
-| `product_url` | string | No | URL to your product/pricing page |
-| `manage_license_page` | string | No | Admin page slug for managing licenses |
-
-### 3. Optional: Enable License Management UI
-
-If you want to use the built-in license management REST API:
-
-```php
-use Hizzle\WP_Plugin_Updates\Helper;
-
-Helper::load( array(
-    'rest_namespace'       => 'my-plugin/v1',
-    'permission_callback'  => 'manage_options',
-    'enable_admin_notices' => true,
-    'notice_callback'      => function( $message, $type ) {
-        // Your custom notice handler
-        add_action( 'admin_notices', function() use ( $message, $type ) {
-            printf(
-                '<div class="notice notice-%s"><p>%s</p></div>',
-                esc_attr( $type ),
-                esc_html( $message )
-            );
-        } );
-    },
-) );
-```
-
-## Server API Requirements
+## Using with custom Licensing Servers (other than Hizzle Licenses)
 
 Your licensing server needs to implement the following endpoints:
 
 ### 1. License Details Endpoint
 
-**GET** `{license_api_url}/{license_key}/?website={site_url}`
+**GET** `your-licensing-server.com/wp-json/hizzle/v1/licenses/{license_key}/?website={site_url}&downloads={plugins}`
+
+Where `downloads` is a comma-separated list of plugin identifiers (e.g. `github-org/your-plugin-slug,github-org/another-plugin`).
 
 Response should include:
 ```json
@@ -101,29 +82,35 @@ Response should include:
 
 ### 2. License Activation Endpoint
 
-**POST** `{license_api_url}/{license_key}/activate`
+**POST** `your-licensing-server.com/wp-json/hizzle/v1/licenses/{license_key}/activate`
 
 Body:
 ```json
 {
-    "website": "https://example.com"
+    "website": "https://example.com",
+    "downloads": "github-org/your-plugin-slug,github-org/another-plugin"
 }
 ```
 
+As usual, downloads is a comma-separated list of plugin identifiers that the license should be activated for.
+
 ### 3. License Deactivation Endpoint
 
-**POST** `{license_api_url}/{license_key}/deactivate`
+**POST** `your-licensing-server.com/wp-json/hizzle/v1/licenses/{license_key}/deactivate`
 
 Body:
 ```json
 {
-    "website": "https://example.com"
+    "website": "https://example.com",
+    "downloads": "github-org/your-plugin-slug,github-org/another-plugin"
 }
 ```
 
 ### 4. Version Check Endpoint
 
-**GET** `{versions_api_url}?hizzle_license={key}&hizzle_license_url={site_url}&downloads={plugins}&hash={hash}`
+**GET** `your-licensing-server.com/wp-json/hizzle_download/v1/versions?hizzle_license={key}&hizzle_license_url={home_url}&downloads={plugins}`
+
+Where `downloads` is a comma-separated list of plugin identifiers (e.g. `github-org/your-plugin-slug,github-org/another-plugin`).
 
 Response should include version info for each plugin:
 ```json
@@ -139,85 +126,12 @@ Response should include version info for each plugin:
 }
 ```
 
-## Advanced Usage
+- Leave download_link empty if the license is not valid or does not have access to updates.
+- If you have both the Hizzle Downloads and Hizzle Licenses plugins installed, it will automatically handle the version check and license validation for you.
 
 ### Custom Plugin Identifiers
 
-By default, the library sends plugin slugs to your API. You can customize this:
-
-```php
-add_filter( 'wp_plugin_updates_identifiers', function( $slugs, $prefix ) {
-    // Convert slugs to your custom format
-    $identifiers = array();
-    foreach ( $slugs as $slug ) {
-        $identifiers[] = 'github-org/' . $slug;
-    }
-    return $identifiers;
-}, 10, 2 );
-```
-
-### Custom Plugin Information
-
-```php
-add_filter( 'wp_plugin_updates_plugin_identifier', function( $slug, $prefix ) {
-    // Return custom identifier for plugins_api
-    return 'github-org/' . $slug;
-}, 10, 2 );
-```
-
-## Programmatic License Management
-
-### Activate a License
-
-```php
-use Hizzle\WP_Plugin_Updates\Main;
-
-// Save license key
-Main::update( 'license_key', 'your-license-key' );
-
-// Verify activation
-$license = Main::get_active_license_key( true );
-if ( is_wp_error( $license ) ) {
-    // Handle error
-}
-```
-
-### Deactivate a License
-
-```php
-use Hizzle\WP_Plugin_Updates\Main;
-
-Main::update( 'license_key', '' );
-```
-
-### Check License Status
-
-```php
-use Hizzle\WP_Plugin_Updates\Main;
-
-$license_key = Main::get_active_license_key();
-$license_details = Main::get_active_license_key( true );
-
-if ( is_wp_error( $license_details ) ) {
-    // Handle error
-} elseif ( empty( $license_details ) ) {
-    // No active license
-} else {
-    // License is active
-}
-```
-
-## Hooks
-
-### Actions
-
-- `wp_plugin_updates_helper_loaded` - Fires when the helper is loaded
-
-### Filters
-
-- `wp_plugin_updates_identifiers` - Filter plugin identifiers before API request
-- `wp_plugin_updates_plugin_identifier` - Filter single plugin identifier
-- `wp_plugin_updates_admin_notices` - Custom admin notices implementation
+The library sends the plugin identifiers you provide (e.g. `github-org/your-plugin-slug`) to the licensing server for license validation and version checks. This is useful if you sell multiple plugins and want to manage them under the same license server.
 
 ## Security
 
@@ -230,25 +144,6 @@ if ( is_wp_error( $license_details ) ) {
 
 - PHP 5.6 or higher
 - WordPress 5.0 or higher
-
-## Translation Support
-
-This library uses a configurable text domain for translations. If you're using this library in your plugin:
-
-1. Set the `text_domain` config to match your plugin's text domain
-2. Translation strings in this library are marked with dynamic text domains
-3. For gettext tools to extract these strings, you may want to create wrapper functions in your plugin that use string literals
-
-Example:
-```php
-// In your plugin
-function my_plugin_translate_updater_strings() {
-    // These will be picked up by gettext
-    __( 'License API URL is not configured.', 'my-plugin' );
-    __( 'Error fetching your license key.', 'my-plugin' );
-    // ... etc
-}
-```
 
 ## License
 
