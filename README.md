@@ -49,7 +49,7 @@ defined( 'ABSPATH' ) || exit;
 require 'vendor/autoload.php';
 
 // Initialize with your server configuration
-$updater = \Hizzle\WP_Plugin_Updates\Main::init(
+$updater = \Hizzle\WP_Plugin_Updates\Main::instance(
     'your-licensing-server.com', // Hostname of your licensing server.
     array(
         'prefix' => 'my_prefix', // Optional prefix for options and transients (default: 'your_licensing_server_com').
