@@ -1,0 +1,27 @@
+# Exclude files from archives
+.github/ export-ignore
+node_modules/ export-ignore
+packages/ export-ignore
+scripts/ export-ignore
+tools/ export-ignore
+vendor/ export-ignore
+.eslintrc.js export-ignore
+.gitignore export-ignore
+.gitattributes export-ignore
+.prettierrc export-ignore
+index.php export-ignore
+lerna.json export-ignore
+package.json export-ignore
+package-lock.json export-ignore
+requirements.md export-ignore
+tsconfig.json export-ignore
+tsconfig.base.json export-ignore
+webpack.config.js export-ignore
+index-ir.json export-ignore
+index-exports.json export-ignore
+index-ast.json export-ignore
+.prettierrc.js export-ignore
+.prettierignore export-ignore
+README.md export-ignore
+CHANGELOD.md export-ignore
+babel.config.js export-ignore
