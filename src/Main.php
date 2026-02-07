@@ -638,11 +638,12 @@ class Main {
 		}
 
 		// Prepare update URL.
-		$url = add_query_arg(
+		$repo = $this->plugins[ $plugin_file ]['repo'];
+		$url  = add_query_arg(
 			array(
 				'hizzle_license_url' => rawurlencode( home_url() ),
 				'hizzle_license'     => rawurlencode( $this->get_active_license_key( false, $this->plugins[ $plugin_file ]['repo'] ?? '' ) ),
-				'downloads'          => rawurlencode( $this->plugins[ $plugin_file ]['repo'] ),
+				'downloads'          => rawurlencode( $repo ),
 				'locales'            => rawurlencode( implode( ',', $locales ) ),
 			),
 			"https://{$this->host_name}/wp-json/hizzle_download/v1/versions"
@@ -674,7 +675,8 @@ class Main {
 			return $return_wp_error ? $response : false;
 		}
 
-		if ( ! isset( $response[ $this->plugins[ $plugin_file ]['repo'] ] ) ) {
+		$response = $response->{$repo} ?? null;
+		if ( empty( $response ) ) {
 			return $return_wp_error ? new \WP_Error(
 				'hizzle_no_update_info',
 				sprintf(
@@ -683,8 +685,6 @@ class Main {
 				)
 			) : false;
 		}
-
-		$response = $response[ $this->plugins[ $plugin_file ]['repo'] ];
 
 		if ( isset( $response->error ) && isset( $response->error_code ) ) {
 			wp_trigger_error(
@@ -704,7 +704,7 @@ class Main {
 				);
 			}
 
-			$response->id          = $this->plugins[ $plugin_file ]['repo'];
+			$response->id          = $repo;
 			$response->slug        = $this->plugins[ $plugin_file ]['slug'];
 			$response->plugin      = $plugin_file;
 			$response->new_version = $response->version;
