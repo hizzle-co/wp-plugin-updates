@@ -147,6 +147,28 @@ class Main {
 				),
 			)
 		);
+
+		// Register setting.
+		register_setting(
+			'options',
+			$this->option_name,
+			array(
+				'type'              => 'object',
+				'description'       => ucfirst( $this->prefix ) . ' settings',
+				'default'           => array( 'license_key' => '' ),
+				'show_in_rest'      => array(
+					'schema' => array(
+						'type'                 => 'object',
+						'properties'           => array(
+							'license_key' => array(
+								'type' => 'string',
+							),
+						),
+						'additionalProperties' => true,
+					),
+				),
+			)
+		);
 	}
 
 	public function check_rest_permissions() {
